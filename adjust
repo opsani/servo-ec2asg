@@ -1,0 +1,222 @@
+#!/usr/bin/python3
+
+import sys
+import time
+import boto3
+
+import adjust
+
+# FIXME: configurable wait times?
+# NOTE: activity timeout may need to be set depending on the health check settings for any ELB/ALB, because aws might not put the instance into service until it passes the checks a few times in a row.
+ACTIVITY_TIMEOUT=60
+INST_STATE_TIMEOUT = 120
+
+sess = boto3.session.Session() # todo: add config, e.g. region_name = ?, etc.
+asg = sess.client("autoscaling")
+ec2 = sess.client("ec2")
+
+INST_TYPES=('t1.micro','t2.nano','t2.micro','t2.small','t2.medium','t2.large','t2.xlarge','t2.2xlarge','m1.small','m1.medium','m1.large','m1.xlarge','m3.medium','m3.large','m3.xlarge','m3.2xlarge','m4.large','m4.xlarge','m4.2xlarge','m4.4xlarge','m4.10xlarge','m4.16xlarge','m2.xlarge','m2.2xlarge','m2.4xlarge','cr1.8xlarge','r3.large','r3.xlarge','r3.2xlarge','r3.4xlarge','r3.8xlarge','r4.large','r4.xlarge','r4.2xlarge','r4.4xlarge','r4.8xlarge','r4.16xlarge','x1.16xlarge','x1.32xlarge','x1e.xlarge','x1e.2xlarge','x1e.4xlarge','x1e.8xlarge','x1e.16xlarge','x1e.32xlarge','i2.xlarge','i2.2xlarge','i2.4xlarge','i2.8xlarge','i3.large','i3.xlarge','i3.2xlarge','i3.4xlarge','i3.8xlarge','i3.16xlarge','i3.metal','hi1.4xlarge','hs1.8xlarge','c1.medium','c1.xlarge','c3.large','c3.xlarge','c3.2xlarge','c3.4xlarge','c3.8xlarge','c4.large','c4.xlarge','c4.2xlarge','c4.4xlarge','c4.8xlarge','c5.large','c5.xlarge','c5.2xlarge','c5.4xlarge','c5.9xlarge','c5.18xlarge','c5d.large','c5d.xlarge','c5d.2xlarge','c5d.4xlarge','c5d.9xlarge','c5d.18xlarge','cc1.4xlarge','cc2.8xlarge','g2.2xlarge','g2.8xlarge','g3.4xlarge','g3.8xlarge','g3.16xlarge','cg1.4xlarge','p2.xlarge','p2.8xlarge','p2.16xlarge','p3.2xlarge','p3.8xlarge','p3.16xlarge','d2.xlarge','d2.2xlarge','d2.4xlarge','d2.8xlarge','f1.2xlarge','f1.16xlarge','m5.large','m5.xlarge','m5.2xlarge','m5.4xlarge','m5.12xlarge','m5.24xlarge','m5d.large','m5d.xlarge','m5d.2xlarge','m5d.4xlarge','m5d.12xlarge','m5d.24xlarge','h1.2xlarge','h1.4xlarge','h1.8xlarge','h1.16xlarge',)
+
+cfg = { "asg" : "default.front_A,default.back_A" }
+# get from env or file FIXME
+
+def get_asg_insts(gname):
+
+    # FIXME: this doesn't fail if asg not found, check for it:
+    a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[gname])
+    g = a["AutoScalingGroups"][0]
+
+    # types of running instances
+    insts = []
+    inst_ids = [ i["InstanceId"] for i in g["Instances"] ]
+    if not inst_ids: # no running instances, return empty
+        return insts,g
+    a = ec2.describe_instances(InstanceIds = inst_ids)
+    for i in a["Reservations"]:
+        insts.extend(i["Instances"])
+
+    return insts,g
+
+def q(gname):
+    insts,g = get_asg_insts(gname)
+    running_types = list( set( ( i["InstanceType"] for i in insts ) ) )
+    # print("running instances' types:", running_types) #DEBUG
+
+    # type defined in current launch template or launch config
+    t = g.get("LaunchTemplate")
+    if t:
+        args = t.copy()
+        args["Versions"] =  [args.pop("Version","$Default")]
+        if "LaunchTemplateId" in args:
+            args.pop("LaunchTemplateName",None) # keep only one of Id or Name in the args
+        v = ec2.describe_launch_template_versions(**args)['LaunchTemplateVersions'][0] # should be only one
+        lt_type = v["LaunchTemplateData"]["InstanceType"]
+        # print("got type from Launch Template:", lt_type,file=sys.stderr)
+    else: # try launch config
+        lc = g.get("LaunchConfigurationName",None) # should be non-empty if there is no template!
+        # FIXME assert lc
+        lc = asg.describe_launch_configurations(LaunchConfigurationNames=[lc])["LaunchConfigurations"][0]
+        lt_type = lc["InstanceType"]
+        # print("got type from Launch config:", lt_type,file=sys.stderr)
+
+    if len(running_types) == 0: # empty asg, return type from config
+        return lt_type
+
+    if len(running_types) != 1:
+        print("multiple instance types in asg {}: {}".format(gname, repr(running_types)),file=sys.stderr)
+        return "(multiple)"
+    else: # len == 1
+        if lt_type != running_types[0]:
+            print("asg {}: instance type does {} not match running instances type {}".format(gname, lt_type, repr(running_types)),file=sys.stderr)
+            return running_types[0] # return actual running type, not one from ASG
+
+    return lt_type
+
+def set_lt_inst_type():
+    """modify launch template linked to an asg to set a new instance type. This is done by adding a new
+    version to the LT."""
+    raise NotImplementedError
+
+def set_lc_inst_type():
+    """modify launch configuration linked to an asg to set a new instance type. This is done by creating an entirely new
+    launch configuration and setting it on the ASG (launch configs cannot be edited once created)"""
+    raise NotImplementedError
+
+
+def wait_for_activities(aid):
+    """wait for asg activities to complete"""
+
+    # NOTE: the wait is done with a constant-time poll; can be improved by using StartTime and Progress to make an estimate
+    # of the completion time.
+    wait_time = 0
+    while True:
+# valid 'StatusCode' values: 'PendingSpotBidPlacement'|'WaitingForSpotInstanceRequestId'|'WaitingForSpotInstanceId'|'WaitingForInstanceId'|'PreInService'|'InProgress'|'WaitingForELBConnectionDraining'|'MidLifecycleAction'|'WaitingForInstanceWarmup'|'Successful'|'Failed'|'Cancelled'
+        time.sleep(2)
+        wait_time += 2
+        final = True
+        r = asg.describe_scaling_activities(ActivityIds=aid)
+        # print("statuses:", repr( [a["StatusCode"] for a in r["Activities"]] ), file=sys.stderr) # DEBUG
+        for a in r["Activities"]:
+            final = final and (a["StatusCode"] in ('Successful','Failed','Cancelled'))
+        if final:
+            return
+        if wait_time > ACTIVITY_TIMEOUT:
+            raise Exception("wait for asg activity timed out")
+
+
+def wait_for_inst_state(ilst, state):
+    wait_time = 0
+    while True:
+        time.sleep(2)
+        wait_time += 2
+        a = ec2.describe_instances(InstanceIds = ilst)
+
+        insts = []
+        for i in a["Reservations"]:
+            insts.extend(i["Instances"])
+
+        if all( (i["State"]["Name"] == state for i in insts) ):
+            return
+
+        # if there are instances in 'terminated' state, they won't exit that state: abort the wait
+        if any( (i["State"]["Name"] == "terminated" for i in insts) ):
+            raise Exception("instance(s) unexpectedly terminated")
+
+        if wait_time > INST_STATE_TIMEOUT:
+            raise Exception("wait for inst state timed out")
+
+    # unreachable: loop is exited only via return or exception
+    # return
+
+def set_running_inst_type(gname, itype, batch=1):
+    """update running instances in an ASG to have a new instance type without destroying them. This is faster
+    than pulling them out of the ASG and waiting for brand new ones to be created. If the ASG is empty (0 running
+    instances), this function does nothing.
+    Maximum 'batch' instances are stopped and removed from the ASG at the same time.
+    batch cannot be more than 20.
+    """
+
+    insts,g = get_asg_insts(gname)
+    if not insts:
+        return
+
+    asg_insts = { i['InstanceId'] : i for i in g["Instances"] } # here we have the ASG lifecycle status, keyed by inst. ID
+
+    while insts:
+        b = insts[:batch]
+        insts = insts[batch:]
+
+        # skip instances that are not InService and those that are already the correct type
+        ilst = [ i["InstanceId"] for i in b if asg_insts[i["InstanceId"]]['LifecycleState'] == "InService" and i["InstanceType"] != itype ]
+        if not ilst:
+            continue
+
+        r = asg.enter_standby(InstanceIds=ilst, AutoScalingGroupName = gname, ShouldDecrementDesiredCapacity = True)
+        wait_for_activities([a["ActivityId"] for a in r["Activities"]])
+        # TODO: double-check with describe_auto_scaling_instances and see all have LifecycleState = "Standby"
+
+        # stop them
+        ec2.stop_instances(InstanceIds = ilst)
+        wait_for_inst_state(ilst, "stopped")
+
+        # modify instance type
+        for i in ilst:
+            ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
+
+        # restart them
+        ec2.start_instances(InstanceIds = ilst)
+        wait_for_inst_state(ilst, "running")
+
+# TODO: do not exit with instances in standby, re-add them even if inst type setting fails
+
+        # re-add back to the ASG
+        r = asg.exit_standby(InstanceIds=ilst, AutoScalingGroupName = gname)
+        wait_for_activities([a["ActivityId"] for a in r["Activities"]])
+
+
+class A(adjust.Adjust):
+
+    def query(self):
+        groups = cfg["asg"].split(",")
+        comps = {}
+        desc = { "components" : comps }
+        for gname in groups:
+            t = q(gname)
+            comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES) } } }
+        return desc           
+
+    def adjust(self):
+        groups = cfg["asg"].split(",")
+        data = self.input_data["application"].get("components", {})
+        lst = []
+        for g in groups:
+            c = data.pop(g, None)
+            if not c:
+                continue # no settings for this grp
+            lst.append( (g, c) )
+        # check for components not in 'groups'
+        if data:
+            # return  {"status":"failed", "message":}
+            # FIXME: base class should support custom exceptions and/or allow returning data from adjust()
+            raise Exception("input data contains unknown components: "+ repr(list(data.keys())))
+        # FIXME: correct behavior on 'extra' data (e.g. unknown comps or unknown settings) - ignore or fail?
+        for g,v in lst:
+            if "settings" not in v: continue
+            t = v["settings"].get("inst_type", None)
+            if not t:
+                continue # not set
+            set_running_inst_type(g, t) # TODO: add config for batch size
+
+        return # {"status":"ok"}
+
+if __name__ == "__main__":
+    # config section 'ec2asg'
+    # servo-ec2asg
+    try:
+        config = yaml.load( open( os.environ.get("OPTUNE_CONFIG", "config.yaml" ) ) )
+        cfg = config["ec2asg"] # die if absent
+        i = A("1", "(todo - help text)", False)
+    except Exception as x:
+        #
+
+    i.run()
