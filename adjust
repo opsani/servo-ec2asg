@@ -6,6 +6,10 @@ import time
 import boto3
 import yaml
 
+import json
+# 'compact' format json encode (no spaces)
+json_enc = json.JSONEncoder(separators=(",",":")).encode
+
 import adjust
 
 # FIXME: configurable wait times?
@@ -25,7 +29,7 @@ CFG_SECTION = "ec2asg"
 class ApiError(Exception):
     pass
 
-class DeployError(Exception): # raised when deploy ends in failed status
+class DeployError(Exception):
     pass
 
 class ConfigError(Exception): # user-provided descriptor not readable
@@ -34,13 +38,14 @@ class ConfigError(Exception): # user-provided descriptor not readable
 def read_config():
     '''load the user-defined application descriptor'''
 
+    cfg_file = os.environ.get("OPTUNE_CONFIG", CFG_FILE )
     try:
-        f = open(DESC_FILE)
+        f = open(cfg_file)
         d = yaml.load(f)
     except IOError as e:
-        raise ConfigError("cannot read configuration from {}:{}".format(DESC_FILE,e.strerror))
+        raise ConfigError("cannot read configuration from {}:{}".format(cfg_file,e.strerror))
     except yaml.error.YAMLError as e:
-        raise ConfigError("syntax error in {}: {}".format(DESC_FILE,str(e)))
+        raise ConfigError("syntax error in {}: {}".format(cfg_file,str(e)))
     # everything else: crash
 
     # 'new' config file
@@ -55,11 +60,13 @@ def read_config():
 
 def get_asg_insts(gname):
 
-    # FIXME: this doesn't fail if asg not found, check for it:
     a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[gname])
+    # describe_auto_.. doesn't fail if asg not found, check for it:
+    if not a.get("AutoScalingGroups"):
+        raise DeployError("Auto-scaling Group {} does not exist".format(gname))
     g = a["AutoScalingGroups"][0]
 
-    # types of running instances
+    # get list of running instances
     insts = []
     inst_ids = [ i["InstanceId"] for i in g["Instances"] ]
     if not inst_ids: # no running instances, return empty
@@ -161,7 +168,62 @@ def wait_for_inst_state(ilst, state):
     # unreachable: loop is exited only via return or exception
     # return
 
-def set_running_inst_type(gname, itype, batch=1):
+class Progress(object):
+    p = 0.0
+    stage_weight = 0.0
+    stage_p = 0.0
+    p0 = 0.0 # p at start-of-stage
+
+    def report(self): # this can be replaced to change how progress updates are sent
+        print (json_enc({"progress":int(round(self.p*100.0))}))
+
+    def set(self, v):
+        if v<0.0: v = 0.0
+        if v>1.0: v = 1.0
+        self.p = v
+        self.report()
+
+    def add(self, v):
+        self.set(self.p + v)
+
+    def stage_start(self, weight):
+        self.stage_weight = weight
+        self.stage_p = 0.0
+        self.p0 = self.p
+
+    def stage_set(self, v):
+        if v<0.0: v = 0.0
+        if v>1.0: v = 1.0
+        self.stage_p = v
+        self.set(self.p0 + v * self.stage_weight)
+
+    def stage_add(self, v):
+        self.stage_set(self.stage_p + v)
+
+    def get(self):
+        return self.p
+
+# relative weights of the progress steps for each batch of instances to be updated; these are arbitrary numbers, just need to be in 
+# (approximate) proportion to the time taken for each step. They will be normalized to sum(weights) = 1
+# at program startup
+progress_weights = {
+"0qry": 0.3,
+"1stdby": 0.25,
+"2wstdby":2.1,
+"3stop":0.2,
+"4wstop":44.0,
+"5mod":0.1, # FIXME: might need delay in this one
+"6start":0.4,
+"7wstart":16, # TODO: start stage might need to get an additional check stage (wait for service to be ready, e.g., check a tcp port is open)
+"8svc":0.33,
+"9wsvc":13.0
+}
+# normalize
+s = sum(progress_weights.values())
+progress_weights = { k:v/s for k,v in progress_weights.items() }
+
+
+def set_running_inst_type(gname, itype, progr, batch=1):
     """update running instances in an ASG to have a new instance type without destroying them. This is faster
     than pulling them out of the ASG and waiting for brand new ones to be created. If the ASG is empty (0 running
     instances), this function does nothing.
@@ -170,10 +232,14 @@ def set_running_inst_type(gname, itype, batch=1):
     """
 
     insts,g = get_asg_insts(gname)
+    progr.stage_add(progress_weights["0qry"])
     if not insts:
         return
 
     asg_insts = { i['InstanceId'] : i for i in g["Instances"] } # here we have the ASG lifecycle status, keyed by inst. ID
+
+    nbatches = (len(insts) + batch - 1) // batch
+    nbatches = float(nbatches) # we'll use this in fp math, convert it now for convenience
 
     while insts:
         b = insts[:batch]
@@ -184,27 +250,39 @@ def set_running_inst_type(gname, itype, batch=1):
         if not ilst:
             continue
 
+        # TODO: interim progress when waiting for state (wait_for_* calls)
+
         r = asg.enter_standby(InstanceIds=ilst, AutoScalingGroupName = gname, ShouldDecrementDesiredCapacity = True)
+        progr.stage_add(progress_weights["1stdby"] / nbatches)
         wait_for_activities([a["ActivityId"] for a in r["Activities"]])
+        progr.stage_add(progress_weights["2wstdby"] / nbatches)
         # TODO: double-check with describe_auto_scaling_instances and see all have LifecycleState = "Standby"
 
         # stop them
         ec2.stop_instances(InstanceIds = ilst)
+        progr.stage_add(progress_weights["3stop"] / nbatches)
         wait_for_inst_state(ilst, "stopped")
+        progr.stage_add(progress_weights["4wstop"] / nbatches)
 
         # modify instance type
         for i in ilst:
             ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
 
+        progr.stage_add(progress_weights["5mod"] / nbatches)
+
         # restart them
         ec2.start_instances(InstanceIds = ilst)
+        progr.stage_add(progress_weights["6start"] / nbatches)
         wait_for_inst_state(ilst, "running")
+        progr.stage_add(progress_weights["7wstart"] / nbatches)
 
 # TODO: do not exit with instances in standby, re-add them even if inst type setting fails
 
         # re-add back to the ASG
         r = asg.exit_standby(InstanceIds=ilst, AutoScalingGroupName = gname)
+        progr.stage_add(progress_weights["8svc"] / nbatches)
         wait_for_activities([a["ActivityId"] for a in r["Activities"]])
+        progr.stage_add(progress_weights["9wsvc"] / nbatches)
 
 
 class A(adjust.Adjust):
@@ -221,7 +299,7 @@ class A(adjust.Adjust):
     def adjust(self):
         groups = cfg["asg"].split(",")
         data = self.input_data["application"].get("components", {})
-        print (self.input_data, file=sys.stderr)
+        # print (self.input_data, file=sys.stderr)
         lst = []
         for g in groups:
             c = data.pop(g, None)
@@ -234,12 +312,18 @@ class A(adjust.Adjust):
             # FIXME: base class should support custom exceptions and/or allow returning data from adjust()
             raise Exception("input data contains unknown components: "+ repr(list(data.keys())))
         # FIXME: correct behavior on 'extra' data (e.g. unknown comps or unknown settings) - ignore or fail?
+        progr = Progress()
+        grp_weight = 1.0/float(len(lst)) # empty settings counted as well (cosmetic, will cause uneven progress advance, FIXME)
+        n = 0
         for g,v in lst:
+            progr.set(grp_weight * float(n))
+            n = n+1
             if "settings" not in v: continue
             t = v["settings"].get("inst_type", None)
             if not t:
                 continue # not set
-            set_running_inst_type(g, t["value"]) # TODO: add config for batch size ; TODO: check "value" exists
+            progr.stage_start(grp_weight)
+            set_running_inst_type(g, t["value"], progr, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
 
         return # {"status":"ok"}
 
@@ -247,10 +331,9 @@ if __name__ == "__main__":
     # config section 'ec2asg'
     # servo-ec2asg
     try:
-        config = yaml.load( open( os.environ.get("OPTUNE_CONFIG", "config.yaml" ) ) )
-        cfg = config[CFG_SECTION] # die if absent
+        cfg = read_config()
+        # TODO (probably best to add to base class: check for required settings)
         i = A("1", "(todo - help text)", False)
-# FIXME: use this: cfg = read_config()
     except Exception as x:
         raise # FIXME
 
