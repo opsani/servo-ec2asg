@@ -4,6 +4,7 @@ import sys
 import os
 import time
 import boto3
+import botocore.exceptions # not accessible via boto3
 import yaml
 
 import json
@@ -59,12 +60,42 @@ def read_config():
 
 
 def get_asg_insts(gname):
+    """get asg group description and a list of instance descriptions for all instances in the ASG. If there are instances that are in transition to InService or to Standby, this function will wait for the activity to complete before returning. This applies only to transitions that have a final state either InService or Standby. Instances that are leaving the group are not waited for are ignored (but the full list of instances is returned in all cases)."""
 
-    a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[gname])
-    # describe_auto_.. doesn't fail if asg not found, check for it:
-    if not a.get("AutoScalingGroups"):
-        raise DeployError("Auto-scaling Group {} does not exist".format(gname))
-    g = a["AutoScalingGroups"][0]
+    retries = 3
+
+    for retry in range(retries):
+        a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[gname])
+        # describe_auto_.. doesn't fail if asg not found, check for it:
+        if not a.get("AutoScalingGroups"):
+            raise DeployError("Auto-scaling Group {} does not exist".format(gname))
+        g = a["AutoScalingGroups"][0]
+
+        transitioning = False
+        for i in g["Instances"]:
+            if i["LifecycleState"] in ("Pending", "Pending:Wait", "Pending:Proceed", "EnteringStandby"):
+                transitioning = True
+                break
+
+        if not transitioning:
+            break
+
+        # wait for activities and re-query
+        acts=asg.describe_scaling_activities(AutoScalingGroupName=gname)
+        acts = acts['Activities']
+        # get only un-completed activities
+        acts = [a for a in acts if a["StatusCode"] not in ('Successful','Failed','Cancelled')]
+        # DEBUG
+        print("waiting for ASG to complete activities (state={}, {} activities pending)".format(
+            repr([i["LifecycleState"] for i in g["Instances"]]),
+            len(acts)
+            ), file=sys.stderr)
+        wait_for_activities ( [a["ActivityId"] for a in acts] )
+    else:
+        raise DeployError("ASG was found in transitional state and did not complete activities after {} sec".format(ACTIVITY_TIMEOUT*retries))
+
+    # asg_insts = { i['InstanceId'] : i for i in g["Instances"] } # here we have the ASG lifecycle status, keyed by inst. ID
+    #        final = final and (a["StatusCode"] in ('Successful','Failed','Cancelled'))
 
     # get list of running instances
     insts = []
@@ -123,16 +154,17 @@ def set_lc_inst_type():
     raise NotImplementedError
 
 
-def wait_for_activities(aid):
+def wait_for_activities(aid, progr = None):
     """wait for asg activities to complete"""
 
     # NOTE: the wait is done with a constant-time poll; can be improved by using StartTime and Progress to make an estimate
     # of the completion time.
     wait_time = 0
-    while True:
+    wait_inc = 2
+    while wait_time <= ACTIVITY_TIMEOUT:
 # valid 'StatusCode' values: 'PendingSpotBidPlacement'|'WaitingForSpotInstanceRequestId'|'WaitingForSpotInstanceId'|'WaitingForInstanceId'|'PreInService'|'InProgress'|'WaitingForELBConnectionDraining'|'MidLifecycleAction'|'WaitingForInstanceWarmup'|'Successful'|'Failed'|'Cancelled'
-        time.sleep(2)
-        wait_time += 2
+        time.sleep(wait_inc)
+        wait_time += wait_inc
         final = True
         r = asg.describe_scaling_activities(ActivityIds=aid)
         # print("statuses:", repr( [a["StatusCode"] for a in r["Activities"]] ), file=sys.stderr) # DEBUG
@@ -140,12 +172,15 @@ def wait_for_activities(aid):
             final = final and (a["StatusCode"] in ('Successful','Failed','Cancelled'))
         if final:
             return
-        if wait_time > ACTIVITY_TIMEOUT:
-            raise Exception("wait for asg activity timed out")
+        if progr:
+            progr.set(float(wait_time) / ACTIVITY_TIMEOUT)
+    else:
+        raise Exception("wait for asg activity timed out")
 
 
-def wait_for_inst_state(ilst, state):
+def wait_for_inst_state(ilst, state, progr = None):
     wait_time = 0
+    wait_inc = 2
     while True:
         time.sleep(2)
         wait_time += 2
@@ -165,43 +200,54 @@ def wait_for_inst_state(ilst, state):
         if wait_time > INST_STATE_TIMEOUT:
             raise Exception("wait for inst state timed out")
 
+        if progr:
+            progr.set(float(wait_time) / ACTIVITY_TIMEOUT)
+
     # unreachable: loop is exited only via return or exception
     # return
 
 class Progress(object):
     p = 0.0
-    stage_weight = 0.0
-    stage_p = 0.0
-    p0 = 0.0 # p at start-of-stage
+    # p0 = 0.0 # p at start-of-stage
+    parent = None
 
-    def report(self): # this can be replaced to change how progress updates are sent
-        print (json_enc({"progress":int(round(self.p*100.0))}))
+    def report(self, msg = None): # this can be replaced to change how progress updates are sent
+        d = {"progress":int(round(self.p*100.0))}
+        if msg:
+            d["message"] = msg
+        print (json_enc(d))
 
     def set(self, v):
+        """NOTE all progress-changing methods should end up calling this"""
         if v<0.0: v = 0.0
         if v>1.0: v = 1.0
         self.p = v
+        if self.parent:
+            self.parent.set(self.p0 + v*self.weight)
+            return
         self.report()
 
     def add(self, v):
         self.set(self.p + v)
 
-    def stage_start(self, weight):
-        self.stage_weight = weight
-        self.stage_p = 0.0
-        self.p0 = self.p
-
-    def stage_set(self, v):
-        if v<0.0: v = 0.0
-        if v>1.0: v = 1.0
-        self.stage_p = v
-        self.set(self.p0 + v * self.stage_weight)
-
-    def stage_add(self, v):
-        self.stage_set(self.stage_p + v)
-
     def get(self):
         return self.p
+
+    def stage(self, weight):
+        n = Progress()
+        n.parent = self
+        n.weight = weight
+        n.p0 = self.p
+        return n
+
+    def __enter__(self):
+        assert self.parent # (can't enter/exit if not created with stage()!)
+        return self
+
+    def __exit__(self, exct, excv, trace):
+        assert self.parent # (can't enter/exit if not created with stage()!)
+        self.parent.set(self.p0+self.weight)
+        return False
 
 # relative weights of the progress steps for each batch of instances to be updated; these are arbitrary numbers, just need to be in 
 # (approximate) proportion to the time taken for each step. They will be normalized to sum(weights) = 1
@@ -212,7 +258,7 @@ progress_weights = {
 "2wstdby":2.1,
 "3stop":0.2,
 "4wstop":44.0,
-"5mod":0.1, # FIXME: might need delay in this one
+"5mod":0.1,
 "6start":0.4,
 "7wstart":16, # TODO: start stage might need to get an additional check stage (wait for service to be ready, e.g., check a tcp port is open)
 "8svc":0.33,
@@ -222,6 +268,7 @@ progress_weights = {
 s = sum(progress_weights.values())
 progress_weights = { k:v/s for k,v in progress_weights.items() }
 
+ASG_FINAL_STATES = ("Detaching", "Detached", "Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")
 
 def set_running_inst_type(gname, itype, progr, batch=1):
     """update running instances in an ASG to have a new instance type without destroying them. This is faster
@@ -231,8 +278,8 @@ def set_running_inst_type(gname, itype, progr, batch=1):
     batch cannot be more than 20.
     """
 
-    insts,g = get_asg_insts(gname)
-    progr.stage_add(progress_weights["0qry"])
+    insts,g = get_asg_insts(gname) # this will wait for any outstanding Standby<->InService transitions, returning only when all are idle or leaving the group
+    progr.add(progress_weights["0qry"])
     if not insts:
         return
 
@@ -245,44 +292,84 @@ def set_running_inst_type(gname, itype, progr, batch=1):
         b = insts[:batch]
         insts = insts[batch:]
 
-        # skip instances that are not InService and those that are already the correct type
-        ilst = [ i["InstanceId"] for i in b if asg_insts[i["InstanceId"]]['LifecycleState'] == "InService" and i["InstanceType"] != itype ]
+        # skip instances that are already the correct type or are transitioning out of the ASG permanently
+        ilst = [ i["InstanceId"] for i in b if i["InstanceType"] != itype and (asg_insts[i["InstanceId"]] not in ASG_FINAL_STATES) ]
         if not ilst:
             continue
 
-        # TODO: interim progress when waiting for state (wait_for_* calls)
+        # filter only InService instances, these need to be put into Standby
+        ilst_inservice = [ i for i in ilst if asg_insts[i]['LifecycleState'] == "InService" ]
+        # ilst_stdby is what needs to be returned back to InService - all that we put into standby and all that are already there
+        ilst_stdby = ilst_inservice + [i for i in ilst if asg_insts[i]['LifecycleState'] == "Standby"]
 
-        r = asg.enter_standby(InstanceIds=ilst, AutoScalingGroupName = gname, ShouldDecrementDesiredCapacity = True)
-        progr.stage_add(progress_weights["1stdby"] / nbatches)
-        wait_for_activities([a["ActivityId"] for a in r["Activities"]])
-        progr.stage_add(progress_weights["2wstdby"] / nbatches)
+        if ilst_inservice:
+            r = asg.enter_standby(InstanceIds=ilst_inservice, AutoScalingGroupName = gname, ShouldDecrementDesiredCapacity = True)
+        progr.add(progress_weights["1stdby"] / nbatches)
+        with progr.stage(progress_weights["2wstdby"] / nbatches) as ps:
+            wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
         # TODO: double-check with describe_auto_scaling_instances and see all have LifecycleState = "Standby"
 
-        # stop them
-        ec2.stop_instances(InstanceIds = ilst)
-        progr.stage_add(progress_weights["3stop"] / nbatches)
-        wait_for_inst_state(ilst, "stopped")
-        progr.stage_add(progress_weights["4wstop"] / nbatches)
+        # use try/finally to ensure we attempt to restore the instances back into the ASG, even if failures occur
+        restarted = False
+        try:
+            # stop them
+            ec2.stop_instances(InstanceIds = ilst)
+            progr.add(progress_weights["3stop"] / nbatches)
+            with progr.stage(progress_weights["4wstop"] / nbatches) as ps:
+                wait_for_inst_state(ilst, "stopped", ps)
 
-        # modify instance type
-        for i in ilst:
-            ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
+            # modify instance type
+            for i in ilst:
+                ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
 
-        progr.stage_add(progress_weights["5mod"] / nbatches)
+            progr.add(progress_weights["5mod"] / nbatches)
 
-        # restart them
-        ec2.start_instances(InstanceIds = ilst)
-        progr.stage_add(progress_weights["6start"] / nbatches)
-        wait_for_inst_state(ilst, "running")
-        progr.stage_add(progress_weights["7wstart"] / nbatches)
+            # restart them (retry ONCE, there is a rare condition where modify_instance_attribute hasn't propagated yet)
+            retry = False
+            try:
+                ec2.start_instances(InstanceIds = ilst)
+            except botocore.exceptions.ClientError as x:
+                c = getattr(x,"response",{}).get("Error",{}).get("Code","")
+                # we MAY get an error that is transient, something like:
+                #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
+                # retry once, if the error code indicates this might be the case
+                if c != "InvalidParameterValue":
+                    raise
+                retry = True
+            if retry:
+                time.sleep(1)
+                ec2.start_instances(InstanceIds = ilst)
+            progr.add(progress_weights["6start"] / nbatches)
 
-# TODO: do not exit with instances in standby, re-add them even if inst type setting fails
+            with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
+                wait_for_inst_state(ilst, "running", ps)
+            restarted = True
 
-        # re-add back to the ASG
-        r = asg.exit_standby(InstanceIds=ilst, AutoScalingGroupName = gname)
-        progr.stage_add(progress_weights["8svc"] / nbatches)
-        wait_for_activities([a["ActivityId"] for a in r["Activities"]])
-        progr.stage_add(progress_weights["9wsvc"] / nbatches)
+        finally:
+            if not restarted: # an error occurred, attempt to start them (again, if needed), ignoring all errors
+                rs = 0
+                try:
+                    ec2.start_instances(InstanceIds = ilst)
+                    with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
+                        wait_for_inst_state(ilst, "running", ps)
+                except Exception:
+                    pass
+                # re-query the state and warn if that fails or not everything is 'running'
+                try:
+                    a = ec2.describe_instances(InstanceIds = ilst)
+                    tmp_insts = []
+                    for i in a["Reservations"]:
+                        tmp_insts.extend(i["Instances"])
+                    if not all( (i["State"]["Name"] == "running" for i in tmp_insts) ):
+                        print(file=sys.stderr)
+                        progr.report(msg = "an error occurred during instance type update and some instances could not be restarted. They will be returned to InService state anyway, note this may cause the ASG to replace them")
+                except Exception:
+                    progr.report(msg = "an error occurred during instance type update and an additional error occurred when attempting to check the state of the instances. They will be returned to InService state anyway, note this may cause the ASG to replace them. In addition an error occurred ")
+            # re-add back to the ASG
+            r = asg.exit_standby(InstanceIds=ilst_stdby, AutoScalingGroupName = gname)
+            progr.add(progress_weights["8svc"] / nbatches)
+            with progr.stage(progress_weights["9wsvc"] / nbatches) as ps:
+                wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
 
 
 class A(adjust.Adjust):
@@ -322,8 +409,8 @@ class A(adjust.Adjust):
             t = v["settings"].get("inst_type", None)
             if not t:
                 continue # not set
-            progr.stage_start(grp_weight)
-            set_running_inst_type(g, t["value"], progr, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
+            with progr.stage(grp_weight) as p_stage:
+                set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
 
         return # {"status":"ok"}
 
