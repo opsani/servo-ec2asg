@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 import sys
 import os
@@ -249,7 +249,7 @@ class Progress(object):
         self.parent.set(self.p0+self.weight)
         return False
 
-# relative weights of the progress steps for each batch of instances to be updated; these are arbitrary numbers, just need to be in 
+# relative weights of the progress steps for each batch of instances to be updated; these are arbitrary numbers, just need to be in
 # (approximate) proportion to the time taken for each step. They will be normalized to sum(weights) = 1
 # at program startup
 progress_weights = {
@@ -304,10 +304,10 @@ def set_running_inst_type(gname, itype, progr, batch=1):
 
         if ilst_inservice:
             r = asg.enter_standby(InstanceIds=ilst_inservice, AutoScalingGroupName = gname, ShouldDecrementDesiredCapacity = True)
-        progr.add(progress_weights["1stdby"] / nbatches)
-        with progr.stage(progress_weights["2wstdby"] / nbatches) as ps:
-            wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
-        # TODO: double-check with describe_auto_scaling_instances and see all have LifecycleState = "Standby"
+            progr.add(progress_weights["1stdby"] / nbatches)
+            with progr.stage(progress_weights["2wstdby"] / nbatches) as ps:
+                wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
+            # TODO: double-check with describe_auto_scaling_instances and see all have LifecycleState = "Standby"
 
         # use try/finally to ensure we attempt to restore the instances back into the ASG, even if failures occur
         restarted = False
@@ -381,7 +381,7 @@ class A(adjust.Adjust):
         for gname in groups:
             t = q(gname)
             comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES) } } }
-        return desc           
+        return desc
 
     def adjust(self):
         groups = cfg["asg"].split(",")
