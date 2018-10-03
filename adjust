@@ -380,7 +380,7 @@ class A(adjust.Adjust):
         desc = { "components" : comps }
         for gname in groups:
             t = q(gname)
-            comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES) } } }
+            comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
         return desc
 
     def adjust(self):
