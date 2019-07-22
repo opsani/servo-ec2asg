@@ -15,7 +15,7 @@ import adjust
 
 # FIXME: configurable wait times?
 # NOTE: activity timeout may need to be set depending on the health check settings for any ELB/ALB, because aws might not put the instance into service until it passes the checks a few times in a row.
-ACTIVITY_TIMEOUT=60
+ACTIVITY_TIMEOUT = 60
 INST_STATE_TIMEOUT = 120
 
 sess = boto3.session.Session() # todo: add config, e.g. region_name = ?, etc.
@@ -201,7 +201,7 @@ def wait_for_inst_state(ilst, state, progr = None):
             raise Exception("wait for inst state timed out")
 
         if progr:
-            progr.set(float(wait_time) / ACTIVITY_TIMEOUT)
+            progr.set(float(wait_time) / INST_STATE_TIMEOUT)
 
     # unreachable: loop is exited only via return or exception
     # return
