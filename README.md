@@ -38,3 +38,14 @@ If the driver is not ran from an AWS EC2 instance that has appropriate role sett
     aws_access_key_id = AAAAAAAAAAAAAAAAAAAA
     aws_secret_access_key = ssssssssssssssssssssssssssssssssssssssss
 
+You can extract particular group's instance ids for monitoring by a measure driver. To do so, define section `monitoring` using an example below.
+
+```yaml
+monitoring:
+    inst_ids_asg: test-asg
+    ref_inst_ids_asg: ref-test-asg
+    all_inst_ids_param: InstanceId
+```  
+`inst_ids_asg` - which group to use to extract instance ids that would be treated as `canary` instances.
+`ref_inst_ids_asg` - which group to use to extract instance ids that would be treated as `reference` or in other words `production` instances.
+`all_inst_ids_param` - which parameter from EC2 Describe Instance API (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html#API_DescribeInstances_ResponseElements) to use.

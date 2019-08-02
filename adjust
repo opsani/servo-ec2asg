@@ -375,12 +375,31 @@ def set_running_inst_type(gname, itype, progr, batch=1):
 class A(adjust.Adjust):
 
     def query(self):
+        monitoring = {}
+        monit_cfg = cfg.get('monitoring')
+
+        if monit_cfg:
+            inst_param = monit_cfg.get('all_inst_ids_param', 'InstanceId')
+
+            def extract_prop(inst):
+                return inst[inst_param]
+
+            inst_ids_asg = monit_cfg.get('inst_ids_asg')
+            if inst_ids_asg:
+                instances, _ = get_asg_insts(inst_ids_asg)
+                monitoring['instance_ids'] = list(map(extract_prop, instances))
+
+            ref_inst_ids_asg = monit_cfg.get('ref_inst_ids_asg')
+            if ref_inst_ids_asg:
+                instances, _ = get_asg_insts(ref_inst_ids_asg)
+                monitoring['ref_instance_ids'] = list(map(extract_prop, instances))
+
         groups = cfg["asg"].split(",")
         comps = {}
         desc = { "components" : comps }
         for gname in groups:
             t = q(gname)
-            comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
+            comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } }, **monitoring }
         return desc
 
     def adjust(self):
