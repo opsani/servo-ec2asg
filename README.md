@@ -48,4 +48,4 @@ monitoring:
 ```  
 `inst_ids_asg` - which group to use to extract instance ids that would be treated as `canary` instances.
 `ref_inst_ids_asg` - which group to use to extract instance ids that would be treated as `reference` or in other words `production` instances.
-`all_inst_ids_param` - which parameter from EC2 Describe Instance API (https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html#API_DescribeInstances_ResponseElements) to use.
+`all_inst_ids_param` - which parameter from [EC2 Describe Instances API response](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html#API_DescribeInstances_ResponseElements) section `<instancesSet>.<item>` to use. Note: this property should always begin with capital letter.
