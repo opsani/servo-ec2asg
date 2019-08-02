@@ -68,7 +68,7 @@ def get_asg_insts(gname):
         a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[gname])
         # describe_auto_.. doesn't fail if asg not found, check for it:
         if not a.get("AutoScalingGroups"):
-            raise DeployError("Auto-scaling Group {} does not exist".format(gname))
+            raise DeployError('Auto-scaling Group "{}" does not exist'.format(gname))
         g = a["AutoScalingGroups"][0]
 
         transitioning = False
@@ -375,35 +375,42 @@ def set_running_inst_type(gname, itype, progr, batch=1):
 class A(adjust.Adjust):
 
     def query(self):
+        gnames = list(filter(str, map(lambda g: g.strip(), (cfg.get('asg') or '').split(','))))
+        ref_gnames = list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') or '').split(','))))
+        inst_param = cfg.get('asg_inst_param', 'InstanceId')
+
         monitoring = {}
-        monit_cfg = cfg.get('monitoring')
-
-        if monit_cfg:
-            inst_param = monit_cfg.get('all_inst_ids_param', 'InstanceId')
-
+        if ref_gnames:
             def extract_prop(inst):
                 return inst[inst_param]
 
-            inst_ids_asg = monit_cfg.get('inst_ids_asg')
-            if inst_ids_asg:
-                instances, _ = get_asg_insts(inst_ids_asg)
-                monitoring['instance_ids'] = list(map(extract_prop, instances))
+            def get_instances_from_group(groups):
+                for gname in groups:
+                    try:
+                        instances, _ = get_asg_insts(gname)
+                        assert len(instances) > 0, 'No instances retrieved for Auto Scaling group named "{}"'.format(gname)
+                    except Exception as e:
+                        raise Exception('Error getting a list of instances for Auto Scaling group named "{}"\n'
+                                        '> {}: {}'.format(gname, e.__class__.__name__, str(e)))
+                    yield from instances
 
-            ref_inst_ids_asg = monit_cfg.get('ref_inst_ids_asg')
-            if ref_inst_ids_asg:
-                instances, _ = get_asg_insts(ref_inst_ids_asg)
-                monitoring['ref_instance_ids'] = list(map(extract_prop, instances))
+            monitoring_groups = (('instance_ids', gnames), ('ref_instance_ids', ref_gnames))
+            for mgroup, gnames in monitoring_groups:
+                try:
+                    monitoring[mgroup] = list(set(map(extract_prop, get_instances_from_group(gnames))))
+                except Exception as e:
+                    raise Exception('Error getting a list of instance ids for monitoring group "{}"\n'
+                                    '> {}: {}'.format(mgroup, e.__class__.__name__, str(e)))
 
-        groups = cfg["asg"].split(",")
         comps = {}
-        desc = { "components" : comps }
-        for gname in groups:
+        desc = { "components" : comps, **monitoring }
+        for gname in gnames:
             t = q(gname)
-            comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } }, **monitoring }
+            comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
         return desc
 
     def adjust(self):
-        groups = cfg["asg"].split(",")
+        groups = list(map(lambda g: g.strip(), cfg['asg'].split(',')))
         data = self.input_data["application"].get("components", {})
         # print (self.input_data, file=sys.stderr)
         lst = []
