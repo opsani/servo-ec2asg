@@ -379,7 +379,7 @@ class A(adjust.Adjust):
         ref_gnames = list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') or '').split(','))))
         inst_param = cfg.get('asg_inst_param', 'InstanceId')
 
-        monitoring_groups = {}
+        monitoring = {}
         if ref_gnames:
             def extract_prop(inst):
                 return inst[inst_param]
@@ -397,13 +397,13 @@ class A(adjust.Adjust):
             monitoring_groups = (('instance_ids', gnames), ('ref_instance_ids', ref_gnames))
             for mgroup, gnames in monitoring_groups:
                 try:
-                    monitoring_groups[mgroup] = list(set(map(extract_prop, get_instances_from_group(gnames))))
+                    monitoring[mgroup] = list(set(map(extract_prop, get_instances_from_group(gnames))))
                 except Exception as e:
                     raise Exception('Error getting a list of instance ids for monitoring group "{}"\n'
                                     '> {}: {}'.format(mgroup, e.__class__.__name__, str(e)))
 
         comps = {}
-        desc = { "components" : comps, "monitoring": monitoring_groups }
+        desc = { "components" : comps, "monitoring": monitoring }
         for gname in gnames:
             t = q(gname)
             comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
