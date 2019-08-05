@@ -403,7 +403,7 @@ class A(adjust.Adjust):
                                     '> {}: {}'.format(mgroup, e.__class__.__name__, str(e)))
 
         comps = {}
-        desc = { "components" : comps, "monitoring": monitoring }
+        desc = { "application": {"components" : comps}, "monitoring": monitoring }
         for gname in gnames:
             t = q(gname)
             comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
