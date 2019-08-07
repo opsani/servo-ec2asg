@@ -68,7 +68,8 @@ def get_asg_insts(gname):
         a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[gname])
         # describe_auto_.. doesn't fail if asg not found, check for it:
         if not a.get("AutoScalingGroups"):
-            raise DeployError("Auto-scaling Group {} does not exist".format(gname))
+            raise DeployError("Auto-scaling Group {} does not exist:  {}".format(
+                gname, json_enc(a)))
         g = a["AutoScalingGroups"][0]
 
         transitioning = False
