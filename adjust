@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-
+import hashlib
 import sys
 import os
+from functools import lru_cache
+
 import time
 import boto3
 import botocore.exceptions # not accessible via boto3
@@ -376,39 +378,100 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
 
 
+def hash_string(s):
+    # return s  # for debugging
+    return hashlib.sha1(s.encode('utf-8')).hexdigest()
+
+
 class A(adjust.Adjust):
 
+    @staticmethod
+    def insts_by_id(instance_ids):
+        l = instance_ids
+        while l:
+            i = ec2.describe_instances(InstanceIds=l[:10])
+            for r in i['Reservations']:
+                yield from sorted(r['Instances'], key=lambda inst: inst['InstanceId'])
+            l = l[10:]
+
+    @staticmethod
+    def get_cfg_asgs():
+        return sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('asg') or '').split(',')))))
+
+    @staticmethod
+    def get_spc_id(insts):
+        return hash_string(' '.join(set(map(lambda i: '{}: {};'.format(i['ImageId'], i['InstanceType']), insts))))
+
+    @staticmethod
+    def get_runt_id(insts):
+        return hash_string(' '.join(map(lambda i: '{}: {};'.format(i['InstanceId'], i['State']['Name']), insts)))
+
+    @staticmethod
+    def get_runt_cnt(insts):
+        return len(insts)
+
+    @staticmethod
+    def get_ver_id(insts):
+        return hash_string(''.join(set(map(lambda i: i['ImageId'], insts))))
+
+    def get_mon_inst_ids(self):
+        ret = {}
+        gnames = self.get_cfg_asgs()
+        ref_gnames = sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') or '').split(',')))))
+        for name in gnames:
+            insts = self.get_groups_insts([name])
+            insts = map(lambda i: i['InstanceId'], insts)
+            ret.setdefault('instance_ids', []).extend(insts)
+        for name in ref_gnames:
+            insts = self.get_groups_insts([name])
+            insts = map(lambda i: i['InstanceId'], insts)
+            ret.setdefault('ref_instance_ids', []).extend(insts)
+        return ret
+
+    def get_mon_spcs(self):
+        target_insts = self.get_groups_insts(self.get_cfg_asgs())
+        ret = {
+            'spec_id': self.get_spc_id(target_insts),
+            'runtime_id': self.get_runt_id(target_insts),
+            'version_id': self.get_ver_id(target_insts),
+        }
+        ref_asgs = cfg.get('control', {}).get('userdata', {}).get('deployment') or ''
+        if ref_asgs:
+            ref_asgs = sorted(list(filter(str, map(lambda g: g.strip(), ref_asgs.split(',')))))
+            ref_insts = self.get_groups_insts(ref_asgs)
+            ret.update({
+                'ref_spec_id': self.get_spc_id(ref_insts),
+                'ref_runtime_id': self.get_runt_id(ref_insts),
+                'ref_runtime_count': self.get_runt_cnt(ref_insts),
+                'ref_version_id': self.get_ver_id(ref_insts),
+            })
+        return ret
+
+    @lru_cache(maxsize=None)
+    def get_group(self, name):
+        return get_group(name)
+
+    @lru_cache(maxsize=None)
+    def get_group_insts(self, name):
+        g = self.get_group(name)
+        inst_ids = [i["InstanceId"] for i in g["Instances"]]
+        insts = list(self.insts_by_id(inst_ids))
+        return sorted(insts, key=lambda i: i['InstanceId'])
+
+    def get_groups_insts(self, gnames):
+        r = []
+        for n in gnames:
+            r = self.get_group_insts(n)
+            r.extend(r)
+        return sorted(r, key=lambda i: i['InstanceId'])
+
     def query(self):
-        gnames = list(filter(str, map(lambda g: g.strip(), (cfg.get('asg') or '').split(','))))
-        ref_gnames = list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') or '').split(','))))
-        inst_param = cfg.get('asg_inst_param', 'InstanceId')
-
-        monitoring = {}
-        if ref_gnames:
-            def extract_prop(inst):
-                return inst[inst_param]
-
-            def get_instances_from_group(groups):
-                for gname in groups:
-                    try:
-                        instances, _ = get_asg_insts(gname)
-                        assert len(instances) > 0, 'No instances retrieved for Auto Scaling group named "{}"'.format(gname)
-                    except Exception as e:
-                        raise Exception('Error getting a list of instances for Auto Scaling group named "{}"\n'
-                                        '> {}: {}'.format(gname, e.__class__.__name__, str(e)))
-                    yield from instances
-
-            monitoring_groups = (('instance_ids', gnames), ('ref_instance_ids', ref_gnames))
-            for mgroup, gnames in monitoring_groups:
-                try:
-                    monitoring[mgroup] = list(set(map(extract_prop, get_instances_from_group(gnames))))
-                except Exception as e:
-                    raise Exception('Error getting a list of instance ids for monitoring group "{}"\n'
-                                    '> {}: {}'.format(mgroup, e.__class__.__name__, str(e)))
-
+        m = self.get_mon_spcs()
+        if cfg.get('ref_asg'):
+            m.update(self.get_mon_inst_ids())
         comps = {}
-        desc = { "application": {"components" : comps}, "monitoring": monitoring }
-        for gname in gnames:
+        desc = { "application": {"components" : comps}, "monitoring": m }
+        for gname in self.get_cfg_asgs():
             t = q(gname)
             comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
         return desc
@@ -442,7 +505,7 @@ class A(adjust.Adjust):
             with progr.stage(grp_weight) as p_stage:
                 set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
 
-        return # {"status":"ok"}
+        return {"status":"ok", "monitoring": self.get_mon_spcs()}
 
 if __name__ == "__main__":
     # config section 'ec2asg'
