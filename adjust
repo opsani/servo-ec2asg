@@ -59,17 +59,21 @@ def read_config():
     return d
 
 
+def get_group(name):
+    a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[name])
+    # describe_auto_.. doesn't fail if asg not found, check for it:
+    if not a.get("AutoScalingGroups"):
+        raise DeployError('Auto-scaling Group "{}" does not exist'.format(name))
+    return a["AutoScalingGroups"][0]
+
+
 def get_asg_insts(gname):
     """get asg group description and a list of instance descriptions for all instances in the ASG. If there are instances that are in transition to InService or to Standby, this function will wait for the activity to complete before returning. This applies only to transitions that have a final state either InService or Standby. Instances that are leaving the group are not waited for are ignored (but the full list of instances is returned in all cases)."""
 
     retries = 3
 
     for retry in range(retries):
-        a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[gname])
-        # describe_auto_.. doesn't fail if asg not found, check for it:
-        if not a.get("AutoScalingGroups"):
-            raise DeployError('Auto-scaling Group "{}" does not exist'.format(gname))
-        g = a["AutoScalingGroups"][0]
+        g = get_group(gname)
 
         transitioning = False
         for i in g["Instances"]:
