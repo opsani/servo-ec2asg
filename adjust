@@ -461,8 +461,8 @@ class A(adjust.Adjust):
     def get_groups_insts(self, gnames):
         r = []
         for n in gnames:
-            r = self.get_group_insts(n)
-            r.extend(r)
+            insts = self.get_group_insts(n)
+            r.extend(insts)
         return sorted(r, key=lambda i: i['InstanceId'])
 
     def query(self):
