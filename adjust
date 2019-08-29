@@ -400,7 +400,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def get_spc_id(insts):
-        return hash_string(' '.join(set(map(lambda i: '{}: {};'.format(i['ImageId'], i['InstanceType']), insts))))
+        return hash_string(' '.join(map(lambda i: '{}: {};'.format(i['ImageId'], i['InstanceType']), insts)))
 
     @staticmethod
     def get_runt_id(insts):
@@ -412,7 +412,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def get_ver_id(insts):
-        return hash_string(''.join(set(map(lambda i: i['ImageId'], insts))))
+        return hash_string(''.join(map(lambda i: i['ImageId'], insts)))
 
     def get_mon_inst_ids(self):
         ret = {}
