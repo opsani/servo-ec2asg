@@ -435,10 +435,9 @@ class A(adjust.Adjust):
             'runtime_id': self.get_runt_id(target_insts),
             'version_id': self.get_ver_id(target_insts),
         }
-        ref_asgs = cfg.get('control', {}).get('userdata', {}).get('deployment') or ''
-        if ref_asgs:
-            ref_asgs = sorted(list(filter(str, map(lambda g: g.strip(), ref_asgs.split(',')))))
-            ref_insts = self.get_groups_insts(ref_asgs)
+        ref_asg = cfg.get('control', {}).get('userdata', {}).get('deployment') or ''
+        if ref_asg:
+            ref_insts = self.get_groups_insts([ref_asg])
             ret.update({
                 'ref_spec_id': self.get_spc_id(ref_insts),
                 'ref_runtime_id': self.get_runt_id(ref_insts),
