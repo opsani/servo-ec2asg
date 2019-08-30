@@ -14,11 +14,14 @@ import json
 json_enc = json.JSONEncoder(separators=(",",":")).encode
 
 import adjust
+from adjust import AdjustError
 
 # FIXME: configurable wait times?
 # NOTE: activity timeout may need to be set depending on the health check settings for any ELB/ALB, because aws might not put the instance into service until it passes the checks a few times in a row.
 ACTIVITY_TIMEOUT = 60
 INST_STATE_TIMEOUT = 120
+SETTLE_TIME = 300
+SETTLE_CHECK_TIME = 30
 
 sess = boto3.session.Session() # todo: add config, e.g. region_name = ?, etc.
 asg = sess.client("autoscaling")
@@ -464,6 +467,31 @@ class A(adjust.Adjust):
             r.extend(insts)
         return sorted(r, key=lambda i: i['InstanceId'])
 
+    def settle(self, period=SETTLE_TIME):
+        mon0 = self.get_mon_spcs()  # Get initial env state for monitoring
+        runtime_id0 = mon0["runtime_id"]  # Record runtime_id to a separate var to track target asg restarts
+        target_asg = self.get_cfg_asgs()
+        expired = False
+        start = time.time()
+        # Recurring check failure counters
+        target_asgs_restarts = 0
+        # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
+        while not expired:
+            mon = self.get_mon_spcs()  # Get fresh env state for monitoring
+            if mon["runtime_id"] != runtime_id0:
+                # Track multiple target asg restarts by increasing the counter and resetting runtime_id0
+                # to the last retrieved target asg's runtime_id.
+                target_asgs_restarts += 1
+                runtime_id0 = mon["runtime_id"]
+            time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
+            expired = time.time() - start >= period  # Update settlement period status (i.e. whether done or not)
+        if target_asgs_restarts == 1:
+            raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
+        elif target_asgs_restarts > 1:
+            raise AdjustError("target asg {} restarted {} times in the last {} minutes {} seconds"
+                              "".format(target_asg, target_asgs_restarts, period // 60, period % 60),
+                              status="rejected", reason="unstable")
+
     def query(self):
         m = self.get_mon_spcs()
         if cfg.get('ref_asg'):
@@ -503,6 +531,8 @@ class A(adjust.Adjust):
                 continue # not set
             with progr.stage(grp_weight) as p_stage:
                 set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
+
+        self.settle(self.input_data.get('control', {}).get('settlement'))
 
         return {"status":"ok", "monitoring": self.get_mon_spcs()}
 
