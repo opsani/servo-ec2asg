@@ -457,13 +457,8 @@ class A(adjust.Adjust):
             })
         return ret
 
-    @lru_cache(maxsize=None)
-    def get_group(self, name):
-        return get_group(name)
-
-    @lru_cache(maxsize=None)
     def get_group_insts(self, name):
-        g = self.get_group(name)
+        g = get_group(name)
         inst_ids = [i["InstanceId"] for i in g["Instances"]]
         insts = list(self.insts_by_id(inst_ids))
         return sorted(insts, key=lambda i: i['InstanceId'])
