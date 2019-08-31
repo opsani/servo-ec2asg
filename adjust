@@ -200,7 +200,7 @@ def wait_for_inst_state(ilst, state, progr = None):
     wait_inc = 2
     while True:
         time.sleep(2)
-        wait_time += 2
+        wait_time += wait_inc
         a = ec2.describe_instances(InstanceIds = ilst)
 
         insts = []
@@ -215,7 +215,7 @@ def wait_for_inst_state(ilst, state, progr = None):
             raise Exception("instance(s) unexpectedly terminated")
 
         if wait_time > INST_STATE_TIMEOUT:
-            raise Exception("wait for inst state timed out")
+            raise Exception('wait for inst state "{}" timed out'.format(state))
 
         if progr:
             progr.set(float(wait_time) / INST_STATE_TIMEOUT)
@@ -589,7 +589,7 @@ class A(adjust.Adjust):
         return desc
 
     def adjust(self):
-        groups = list(map(lambda g: g.strip(), cfg['asg'].split(',')))
+        groups = self.get_cfg_asgs()
         data = self.input_data["application"].get("components", {})
         # print (self.input_data, file=sys.stderr)
         lst = []
