@@ -351,25 +351,30 @@ def set_running_inst_type(gname, itype, progr, batch=1):
 
             progr.add(progress_weights["5mod"] / nbatches)
 
-            # restart them (retry ONCE, there is a rare condition where modify_instance_attribute hasn't propagated yet)
-            retry = False
             try:
-                ec2.start_instances(InstanceIds = ilst)
-            except botocore.exceptions.ClientError as x:
-                c = getattr(x,"response",{}).get("Error",{}).get("Code","")
-                # we MAY get an error that is transient, something like:
-                #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
-                # retry once, if the error code indicates this might be the case
-                if c != "InvalidParameterValue":
-                    raise
-                retry = True
-            if retry:
-                time.sleep(1)
-                ec2.start_instances(InstanceIds = ilst)
-            progr.add(progress_weights["6start"] / nbatches)
+                # restart them (retry ONCE, there is a rare condition where modify_instance_attribute hasn't propagated yet)
+                retry = False
+                try:
+                    ec2.start_instances(InstanceIds = ilst)
+                except botocore.exceptions.ClientError as x:
+                    c = getattr(x,"response",{}).get("Error",{}).get("Code","")
+                    # we MAY get an error that is transient, something like:
+                    #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
+                    # retry once, if the error code indicates this might be the case
+                    if c != "InvalidParameterValue":
+                        raise
+                    retry = True
+                if retry:
+                    time.sleep(1)
+                    ec2.start_instances(InstanceIds = ilst)
+                progr.add(progress_weights["6start"] / nbatches)
 
-            with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
-                wait_for_inst_state(ilst, "running", ps)
+                with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
+                    wait_for_inst_state(ilst, "running", ps)
+            except RETRIABLE_BOTO_EXCEPTIONS as e:
+                raise AdjustError("failed to start instances {}; exception: {}".format(ilst, str(e)),
+                                  status="failed", reason="start-failed")
+
             restarted = True
 
         finally:
@@ -389,9 +394,18 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                         tmp_insts.extend(i["Instances"])
                     if not all( (i["State"]["Name"] == "running" for i in tmp_insts) ):
                         print(file=sys.stderr)
-                        progr.report(msg = "an error occurred during instance type update and some instances could not be restarted. They will be returned to InService state anyway, note this may cause the ASG to replace them")
-                except Exception:
-                    progr.report(msg = "an error occurred during instance type update and an additional error occurred when attempting to check the state of the instances. They will be returned to InService state anyway, note this may cause the ASG to replace them. In addition an error occurred ")
+                        raise AdjustError("failed to start instances {}; "
+                                          "an error occurred during instance type update and some instances "
+                                          "could not be restarted. They will be returned to InService state anyway, "
+                                          "note this may cause the ASG to replace them".format(ilst),
+                                          status="failed", reason="start-failed")
+                except Exception as e:
+                    raise AdjustError("failed to start instances {}; "
+                                      "an error occurred during instance type update and an additional error occurred "
+                                      "when attempting to check the state of the instances. They will be returned to "
+                                      "InService state anyway, note this may cause the ASG to replace them. In "
+                                      "addition an error occurred: {}".format(ilst, str(e)),
+                                      status="failed", reason="start-failed")
             # re-add back to the ASG
             r = asg.exit_standby(InstanceIds=ilst_stdby, AutoScalingGroupName = gname)
             progr.add(progress_weights["8svc"] / nbatches)
