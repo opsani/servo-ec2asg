@@ -530,7 +530,8 @@ class A(adjust.Adjust):
                               status="rejected", reason="version-mismatch")
         if ref_inconsistent:
             raise AdjustError("Reference asg(s) software version or specification is not consistent "
-                              "with target asg(s).")
+                              "with target asg(s).",
+                              status="aborted", reason="ref-app-inconsistent")
         if ref_asgs_unavailable_exc:
             raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                               "exception: {}".format(ref_asgs_unavailable_exc),
