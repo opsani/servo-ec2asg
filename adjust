@@ -498,6 +498,7 @@ class A(adjust.Adjust):
         target_ref_version_mismatch = False
         ref_inconsistent = False
         ref_asgs_unavailable_exc = ''
+        ref_asgs_updated = False
         # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
         while not expired:
             time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
@@ -519,6 +520,9 @@ class A(adjust.Adjust):
                     target_ref_version_mismatch = True
                 if mon["ref_spec_id"] != ref_spec_id0 or mon["ref_version_id"] != ref_version_id0:
                     ref_inconsistent = True
+                if mon["ref_spec_id"] != ref_spec_id0:
+                    ref_spec_id0 = mon0["ref_spec_id"]
+                    ref_asgs_updated = True
         if target_asgs_restarts == 1:
             raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
         elif target_asgs_restarts > 1:
@@ -536,6 +540,9 @@ class A(adjust.Adjust):
             raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                               "exception: {}".format(ref_asgs_unavailable_exc),
                               status="aborted", reason="ref-app-unavailable")
+        if ref_asgs_updated:
+            raise AdjustError("application configuration was modified unexpectedly",
+                              status="transient-failure", reason="app-update")
         return mon
 
     def query(self):
