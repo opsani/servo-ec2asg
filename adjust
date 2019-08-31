@@ -341,8 +341,13 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 wait_for_inst_state(ilst, "stopped", ps)
 
             # modify instance type
-            for i in ilst:
-                ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
+            i = None
+            try:
+                for i in ilst:
+                    ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
+            except Exception as e:
+                raise AdjustError("failed to adjust instance '{}' to type '{}'; exception: {}".format(i, itype, str(e)),
+                                  status="failed", reason="adjust-failed")
 
             progr.add(progress_weights["5mod"] / nbatches)
 
