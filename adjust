@@ -38,6 +38,14 @@ class ApiError(Exception):
 class DeployError(Exception):
     pass
 
+class ASGNotFound(DeployError):
+    pass
+
+class RefASGUnavailableException(Exception):
+    def __init__(self, *args, **kwargs):
+        self.original = kwargs.pop('original', None)
+        super().__init__(*args)
+
 class ConfigError(Exception): # user-provided descriptor not readable
     pass
 
@@ -68,7 +76,7 @@ def get_group(name):
     a = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[name])
     # describe_auto_.. doesn't fail if asg not found, check for it:
     if not a.get("AutoScalingGroups"):
-        raise DeployError('Auto-scaling Group "{}" does not exist'.format(name))
+        raise ASGNotFound('Auto-scaling Group "{}" does not exist'.format(name))
     return a["AutoScalingGroups"][0]
 
 
@@ -278,6 +286,11 @@ s = sum(progress_weights.values())
 progress_weights = { k:v/s for k,v in progress_weights.items() }
 
 ASG_FINAL_STATES = ("Detaching", "Detached", "Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")
+RETRIABLE_BOTO_EXCEPTIONS = (
+    botocore.exceptions.ClientError,
+    botocore.exceptions.BotoCoreError,
+    ASGNotFound,
+)
 
 def set_running_inst_type(gname, itype, progr, batch=1):
     """update running instances in an ASG to have a new instance type without destroying them. This is faster
@@ -439,7 +452,10 @@ class A(adjust.Adjust):
         ref_asg = self.get_cfg_ref_asg()
         has_ref = ref_asg is not None
         target_insts = self.get_groups_insts(self.get_cfg_asgs())
-        ref_insts = self.get_groups_insts([ref_asg]) if has_ref else None
+        try:
+            ref_insts = self.get_groups_insts([ref_asg]) if has_ref else None
+        except RETRIABLE_BOTO_EXCEPTIONS as e:
+            raise RefASGUnavailableException(original=e)
         return target_insts, ref_insts
 
     def get_mon_spcs(self, target_insts, ref_insts):
@@ -481,9 +497,17 @@ class A(adjust.Adjust):
         target_asgs_restarts = 0
         target_ref_version_mismatch = False
         ref_inconsistent = False
+        ref_asgs_unavailable_exc = ''
         # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
         while not expired:
-            target_insts, ref_insts = self.get_target_ref_insts()
+            time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
+            expired = time.time() - start >= period  # Update settlement period status (i.e. whether done or not)
+            try:
+                target_insts, ref_insts = self.get_target_ref_insts()
+            except RefASGUnavailableException as e:
+                ref_asgs_unavailable_exc = str(e.original)
+                continue
+            ref_asgs_unavailable_exc = ''
             mon = self.get_mon_spcs(target_insts, ref_insts)  # Get fresh env state for monitoring checks
             if mon["runtime_id"] != runtime_id0:
                 # Track multiple target asg restarts by increasing the counter and resetting runtime_id0
@@ -495,8 +519,6 @@ class A(adjust.Adjust):
                     target_ref_version_mismatch = True
                 if mon["ref_spec_id"] != ref_spec_id0 or mon["ref_version_id"] != ref_version_id0:
                     ref_inconsistent = True
-            time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
-            expired = time.time() - start >= period  # Update settlement period status (i.e. whether done or not)
         if target_asgs_restarts == 1:
             raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
         elif target_asgs_restarts > 1:
@@ -509,6 +531,10 @@ class A(adjust.Adjust):
         if ref_inconsistent:
             raise AdjustError("Reference asg(s) software version or specification is not consistent "
                               "with target asg(s).")
+        if ref_asgs_unavailable_exc:
+            raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
+                              "exception: {}".format(ref_asgs_unavailable_exc),
+                              status="aborted", reason="ref-app-unavailable")
         return mon
 
     def query(self):
