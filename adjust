@@ -435,16 +435,20 @@ class A(adjust.Adjust):
             ret.setdefault('ref_instance_ids', []).extend(insts)
         return ret
 
-    def get_mon_spcs(self):
+    def get_target_ref_insts(self):
+        ref_asg = self.get_cfg_ref_asg()
+        has_ref = ref_asg is not None
         target_insts = self.get_groups_insts(self.get_cfg_asgs())
+        ref_insts = self.get_groups_insts([ref_asg]) if has_ref else None
+        return target_insts, ref_insts
+
+    def get_mon_spcs(self, target_insts, ref_insts):
         ret = {
             'spec_id': self.get_spc_id(target_insts),
             'runtime_id': self.get_runt_id(target_insts),
             'version_id': self.get_ver_id(target_insts),
         }
-        ref_asg = cfg.get('control', {}).get('userdata', {}).get('deployment') or ''
-        if ref_asg:
-            ref_insts = self.get_groups_insts([ref_asg])
+        if ref_insts:
             ret.update({
                 'ref_spec_id': self.get_spc_id(ref_insts),
                 'ref_runtime_id': self.get_runt_id(ref_insts),
@@ -472,39 +476,48 @@ class A(adjust.Adjust):
         return sorted(r, key=lambda i: i['InstanceId'])
 
     def settle(self, period=SETTLE_TIME):
-        mon0 = self.get_mon_spcs()  # Get initial env state for monitoring
-        runtime_id0 = mon0["runtime_id"]  # Record runtime_id to a separate var to track target asg restarts
-        target_asg = self.get_cfg_asgs()
-        has_ref = self.get_cfg_ref_asg() is not None
+        mon0 = mon = self.get_mon_spcs(*self.get_target_ref_insts())  # Get initial env state for monitoring
+        runtime_id0 = mon0["runtime_id"]  # Record runtime_id to track target asg restarts
+        ref_spec_id0 = mon0["ref_spec_id"]  # To track reference asg inconsistency
+        ref_version_id0 = mon0["ref_version_id"]  # To track reference asg inconsistency
         expired = False
         start = time.time()
         # Check-failure counters and checkboxes
         target_asgs_restarts = 0
         target_ref_version_mismatch = False
+        ref_inconsistent = False
         # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
         while not expired:
-            mon = self.get_mon_spcs()  # Get fresh env state for monitoring
+            target_insts, ref_insts = self.get_target_ref_insts()
+            mon = self.get_mon_spcs(target_insts, ref_insts)  # Get fresh env state for monitoring checks
             if mon["runtime_id"] != runtime_id0:
                 # Track multiple target asg restarts by increasing the counter and resetting runtime_id0
                 # to the last retrieved target asg's runtime_id.
                 target_asgs_restarts += 1
                 runtime_id0 = mon["runtime_id"]
-            if has_ref and mon["version_id"] != mon["ref_version_id"]:
-                target_ref_version_mismatch = True
+            if ref_insts:
+                if mon["version_id"] != mon["ref_version_id"]:
+                    target_ref_version_mismatch = True
+                if mon["ref_spec_id"] != ref_spec_id0 or mon["ref_version_id"] != ref_version_id0:
+                    ref_inconsistent = True
             time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
             expired = time.time() - start >= period  # Update settlement period status (i.e. whether done or not)
         if target_asgs_restarts == 1:
             raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
         elif target_asgs_restarts > 1:
             raise AdjustError("target asg {} restarted {} times in the last {} minutes {} seconds"
-                              "".format(target_asg, target_asgs_restarts, period // 60, period % 60),
+                              "".format(self.get_cfg_asgs(), target_asgs_restarts, period // 60, period % 60),
                               status="rejected", reason="unstable")
         if target_ref_version_mismatch:
             raise AdjustError("Target asg(s) software version is different from one in reference asg(s).",
                               status="rejected", reason="version-mismatch")
+        if ref_inconsistent:
+            raise AdjustError("Reference asg(s) software version or specification is not consistent "
+                              "with target asg(s).")
+        return mon
 
     def query(self):
-        m = self.get_mon_spcs()
+        m = self.get_mon_spcs(*self.get_target_ref_insts())
         if cfg.get('ref_asg'):
             m.update(self.get_mon_inst_ids())
         comps = {}
@@ -543,9 +556,9 @@ class A(adjust.Adjust):
             with progr.stage(grp_weight) as p_stage:
                 set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
 
-        self.settle(self.input_data.get('control', {}).get('settlement'))
+        mon = self.settle(self.input_data.get('control', {}).get('settlement'))
 
-        return {"status":"ok", "monitoring": self.get_mon_spcs()}
+        return {"status":"ok", "monitoring": mon}
 
 if __name__ == "__main__":
     # config section 'ec2asg'
