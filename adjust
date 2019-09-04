@@ -286,11 +286,9 @@ s = sum(progress_weights.values())
 progress_weights = { k:v/s for k,v in progress_weights.items() }
 
 ASG_FINAL_STATES = ("Detaching", "Detached", "Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")
-RETRIABLE_BOTO_EXCEPTIONS = (
-    botocore.exceptions.ClientError,
-    botocore.exceptions.BotoCoreError,
-    ASGNotFound,
-)
+RETRIABLE_BOTO_EXCEPTIONS = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError,),
+RETRIABLE_ASG_EXCEPTIONS = (ASGNotFound,)
+RETRIABLE_SERVICE_EXCEPTIONS = (*RETRIABLE_BOTO_EXCEPTIONS, *RETRIABLE_ASG_EXCEPTIONS)
 
 def set_running_inst_type(gname, itype, progr, batch=1):
     """update running instances in an ASG to have a new instance type without destroying them. This is faster
@@ -371,7 +369,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
 
                 with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
                     wait_for_inst_state(ilst, "running", ps)
-            except RETRIABLE_BOTO_EXCEPTIONS as e:
+            except RETRIABLE_SERVICE_EXCEPTIONS as e:
                 raise AdjustError("failed to start instances {}; exception: {}".format(ilst, str(e)),
                                   status="failed", reason="start-failed")
 
@@ -479,7 +477,7 @@ class A(adjust.Adjust):
         target_insts = self.get_groups_insts(self.get_cfg_asgs())
         try:
             ref_insts = self.get_groups_insts([ref_asg]) if has_ref else None
-        except RETRIABLE_BOTO_EXCEPTIONS as e:
+        except RETRIABLE_SERVICE_EXCEPTIONS as e:
             raise RefASGUnavailableException(original=e)
         return target_insts, ref_insts
 
