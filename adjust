@@ -528,11 +528,11 @@ class A(adjust.Adjust):
         start = time.time()
         # Check-failure counters and checkboxes
         target_asgs_restarts = 0
-        target_ref_version_mismatch = False
-        ref_inconsistent = False
         ref_asgs_unavailable_exc = ''
         ref_asgs_updated = False
         ref_asgs_scaled = False
+        ref_inconsistent = False
+        target_ref_version_mismatch = False
         # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
         while not expired:
             time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
@@ -549,42 +549,35 @@ class A(adjust.Adjust):
                 # to the last retrieved target asg's runtime_id.
                 target_asgs_restarts += 1
             if ref_insts:
-                if mon["version_id"] != mon["ref_version_id"]:
-                    target_ref_version_mismatch = True
-                ref_specs_list = self.get_inst_spcs_list(ref_insts)
-                ref_specs_list0 = self.get_inst_spcs_list(ref_insts0)
-                ref_vers_list = self.get_inst_vers_list(ref_insts)
-                ref_vers_list0 = self.get_inst_vers_list(ref_insts0)
-                if ref_specs_list != ref_specs_list0 or ref_vers_list != ref_vers_list0:
-                    ref_inconsistent = True
-                if mon["ref_spec_id"] != mon0["ref_spec_id"]:
-                    ref_asgs_updated = True
-            if mon["ref_runtime_count"] != mon0["ref_runtime_count"]:
-                ref_asgs_scaled = True
+                ref_asgs_updated = mon["ref_spec_id"] != mon0["ref_spec_id"]
+                ref_asgs_scaled = mon["ref_runtime_count"] != mon0["ref_runtime_count"]
+                ref_inconsistent = self.get_inst_spcs_list(ref_insts) != self.get_inst_spcs_list(ref_insts0) or \
+                                   self.get_inst_vers_list(ref_insts) != self.get_inst_vers_list(ref_insts0)
+                target_ref_version_mismatch = mon["version_id"] != mon["ref_version_id"]
             mon0 = mon
         if target_asgs_restarts == 1:
             raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
-        elif target_asgs_restarts > 1:
+        if target_asgs_restarts > 1:
             raise AdjustError("target asg {} restarted {} times in the last {} minutes {} seconds"
                               "".format(self.get_cfg_asgs(), target_asgs_restarts, period // 60, period % 60),
                               status="rejected", reason="unstable")
-        if target_ref_version_mismatch:
-            raise AdjustError("Target asg(s) software version is different from one in reference asg(s).",
-                              status="rejected", reason="version-mismatch")
-        if ref_inconsistent:
-            raise AdjustError("Reference asg(s) software version or specification is not consistent "
-                              "with target asg(s).",
-                              status="aborted", reason="ref-app-inconsistent")
         if ref_asgs_unavailable_exc:
             raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                               "exception: {}".format(ref_asgs_unavailable_exc),
                               status="aborted", reason="ref-app-unavailable")
         if ref_asgs_updated:
-            raise AdjustError("application configuration was modified unexpectedly",
-                              status="transient-failure", reason="app-update")
+            raise AdjustError("reference application configuration was modified unexpectedly",
+                              status="transient-failure", reason="ref-app-update")
         if ref_asgs_scaled:
             raise AdjustError("reference application has scaled during settlement period",
                               status="transient-failure", reason="ref-app-scale")
+        if ref_inconsistent:
+            raise AdjustError("Reference asg(s) software version or specification is not consistent "
+                              "with target asg(s).",
+                              status="aborted", reason="ref-app-inconsistent")
+        if target_ref_version_mismatch:
+            raise AdjustError("Target asg(s) software version is different from one in reference asg(s).",
+                              status="rejected", reason="version-mismatch")
         return mon
 
     def query(self):
