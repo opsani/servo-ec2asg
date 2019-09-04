@@ -32,16 +32,22 @@ INST_TYPES=('t1.micro','t2.nano','t2.micro','t2.small','t2.medium','t2.large','t
 CFG_FILE = "./config.yaml"
 CFG_SECTION = "ec2asg"
 
-class ApiError(Exception):
+class ASGError(Exception):
     pass
 
-class DeployError(Exception):
+class EC2Error(Exception):
     pass
 
-class ASGNotFound(DeployError):
+class ASGNotFound(ASGError):
     pass
 
-class RefASGUnavailableException(Exception):
+class ASGActivityTimeOutError(ASGError):
+    pass
+
+class ASGInstStateTimeOutError(ASGError):
+    pass
+
+class RefASGUnavailableException(ASGError):
     def __init__(self, *args, **kwargs):
         self.original = kwargs.pop('original', None)
         super().__init__(*args)
@@ -109,7 +115,7 @@ def get_asg_insts(gname):
             ), file=sys.stderr)
         wait_for_activities ( [a["ActivityId"] for a in acts] )
     else:
-        raise DeployError("ASG was found in transitional state and did not complete activities after {} sec".format(ACTIVITY_TIMEOUT*retries))
+        raise ASGActivityTimeOutError("ASG was found in transitional state and did not complete activities after {} sec".format(ACTIVITY_TIMEOUT * retries))
 
     # asg_insts = { i['InstanceId'] : i for i in g["Instances"] } # here we have the ASG lifecycle status, keyed by inst. ID
     #        final = final and (a["StatusCode"] in ('Successful','Failed','Cancelled'))
@@ -192,7 +198,7 @@ def wait_for_activities(aid, progr = None):
         if progr:
             progr.set(float(wait_time) / ACTIVITY_TIMEOUT)
     else:
-        raise Exception("wait for asg activity timed out")
+        raise ASGActivityTimeOutError("wait for asg activity timed out")
 
 
 def wait_for_inst_state(ilst, state, progr = None):
@@ -212,10 +218,10 @@ def wait_for_inst_state(ilst, state, progr = None):
 
         # if there are instances in 'terminated' state, they won't exit that state: abort the wait
         if any( (i["State"]["Name"] == "terminated" for i in insts) ):
-            raise Exception("instance(s) unexpectedly terminated")
+            raise EC2Error("instance(s) unexpectedly terminated")
 
         if wait_time > INST_STATE_TIMEOUT:
-            raise Exception('wait for inst state "{}" timed out'.format(state))
+            raise ASGInstStateTimeOutError('wait for inst state "{}" timed out'.format(state))
 
         if progr:
             progr.set(float(wait_time) / INST_STATE_TIMEOUT)
@@ -287,8 +293,8 @@ progress_weights = { k:v/s for k,v in progress_weights.items() }
 
 ASG_FINAL_STATES = ("Detaching", "Detached", "Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")
 RETRIABLE_BOTO_EXCEPTIONS = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError,),
-RETRIABLE_ASG_EXCEPTIONS = (ASGNotFound,)
-RETRIABLE_SERVICE_EXCEPTIONS = (*RETRIABLE_BOTO_EXCEPTIONS, *RETRIABLE_ASG_EXCEPTIONS)
+RETRIABLE_ASG_EXCEPTIONS = (ASGError, ASGNotFound)
+RETRIABLE_SERVICE_EXCEPTIONS = (*RETRIABLE_BOTO_EXCEPTIONS, *RETRIABLE_ASG_EXCEPTIONS, EC2Error)
 
 def set_running_inst_type(gname, itype, progr, batch=1):
     """update running instances in an ASG to have a new instance type without destroying them. This is faster
@@ -343,7 +349,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
             try:
                 for i in ilst:
                     ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
-            except Exception as e:
+            except RETRIABLE_BOTO_EXCEPTIONS as e:
                 raise AdjustError("failed to adjust instance '{}' to type '{}'; exception: {}".format(i, itype, str(e)),
                                   status="failed", reason="adjust-failed")
 
@@ -354,7 +360,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 retry = False
                 try:
                     ec2.start_instances(InstanceIds = ilst)
-                except botocore.exceptions.ClientError as x:
+                except RETRIABLE_BOTO_EXCEPTIONS as x:
                     c = getattr(x,"response",{}).get("Error",{}).get("Code","")
                     # we MAY get an error that is transient, something like:
                     #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
