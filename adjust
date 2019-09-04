@@ -418,13 +418,12 @@ def hash_string(s):
 
 class A(adjust.Adjust):
 
-    @staticmethod
-    def insts_by_id(instance_ids):
+    def insts_by_id(self, instance_ids):
         l = instance_ids
         while l:
             i = ec2.describe_instances(InstanceIds=l[:10])
             for r in i['Reservations']:
-                yield from sorted(r['Instances'], key=lambda inst: inst['InstanceId'])
+                yield from self.sort_instances(r['Instances'])
             l = l[10:]
 
     @staticmethod
@@ -505,18 +504,22 @@ class A(adjust.Adjust):
             })
         return ret
 
+    @staticmethod
+    def sort_instances(insts):
+        return sorted(insts, key=lambda inst: inst['InstanceId'])
+
     def get_group_insts(self, name):
         g = get_group(name)
         inst_ids = [i["InstanceId"] for i in g["Instances"]]
         insts = list(self.insts_by_id(inst_ids))
-        return sorted(insts, key=lambda i: i['InstanceId'])
+        return self.sort_instances(insts)
 
     def get_groups_insts(self, gnames):
         r = []
         for n in gnames:
             insts = self.get_group_insts(n)
             r.extend(insts)
-        return sorted(r, key=lambda i: i['InstanceId'])
+        return self.sort_instances(r)
 
     def settle(self, period=SETTLE_TIME):
         target_insts0, ref_insts0 = self.get_target_ref_insts()
