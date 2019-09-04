@@ -405,10 +405,14 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                                       "addition an error occurred: {}".format(ilst, str(e)),
                                       status="failed", reason="start-failed")
             # re-add back to the ASG
-            r = asg.exit_standby(InstanceIds=ilst_stdby, AutoScalingGroupName = gname)
-            progr.add(progress_weights["8svc"] / nbatches)
-            with progr.stage(progress_weights["9wsvc"] / nbatches) as ps:
-                wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
+            try:
+                r = asg.exit_standby(InstanceIds=ilst_stdby, AutoScalingGroupName = gname)
+                progr.add(progress_weights["8svc"] / nbatches)
+                with progr.stage(progress_weights["9wsvc"] / nbatches) as ps:
+                    wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
+            except RETRIABLE_SERVICE_EXCEPTIONS as e:
+                raise AdjustError("failed to put instances {} back in service; exception: {}"
+                                  "".format(ilst_stdby, str(e)), status="rejected", reason="scheduling-failed")
 
 
 def hash_string(s):
