@@ -436,23 +436,32 @@ class A(adjust.Adjust):
         return cfg.get('control', {}).get('userdata', {}).get('deployment')
 
     @staticmethod
-    def get_inst_spcs_list(insts):
-        return list(map(lambda i: '{}: {};'.format(i['ImageId'], i['InstanceType']), insts))
+    def acq_spec(inst):
+        return '{}: {};'.format(inst['ImageId'], inst['InstanceType'])
+
+    def get_inst_spcs_list(self, insts):
+        return list(map(self.acq_spec, insts))
 
     def get_spc_id(self, insts):
         return hash_string(' '.join(self.get_inst_spcs_list(insts)))
 
     @staticmethod
-    def get_runt_id(insts):
-        return hash_string(' '.join(map(lambda i: '{}: {};'.format(i['InstanceId'], i['State']['Name']), insts)))
+    def acq_runtime(inst):
+        return '{}: {};'.format(inst['InstanceId'], inst['State']['Name'])
+
+    def get_runt_id(self, insts):
+        return hash_string(' '.join(map(self.acq_runtime, insts)))
 
     @staticmethod
     def get_runt_cnt(insts):
         return len(insts)
 
     @staticmethod
-    def get_inst_vers_list(insts):
-        return list(map(lambda i: i['ImageId'], insts))
+    def acq_version(inst):
+        return inst['ImageId']
+
+    def get_inst_vers_list(self, insts):
+        return list(map(self.acq_version, insts))
 
     def get_ver_id(self, insts):
         return hash_string(''.join(self.get_inst_vers_list(insts)))
