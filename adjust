@@ -294,7 +294,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
         insts = insts[batch:]
 
         # skip instances that are already the correct type or are transitioning out of the ASG permanently
-        ilst = [ i["InstanceId"] for i in b if i["InstanceType"] != itype and (asg_insts[i["InstanceId"]] not in ASG_FINAL_STATES) ]
+        ilst = [ i["InstanceId"] for i in b if i["InstanceType"] != itype and (asg_insts[i["InstanceId"]]['LifecycleState'] not in ASG_FINAL_STATES) ]
         if not ilst:
             continue
 
