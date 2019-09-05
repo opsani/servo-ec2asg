@@ -2,7 +2,6 @@
 import hashlib
 import sys
 import os
-from functools import lru_cache
 
 import time
 import boto3
@@ -292,9 +291,9 @@ s = sum(progress_weights.values())
 progress_weights = { k:v/s for k,v in progress_weights.items() }
 
 ASG_FINAL_STATES = ("Detaching", "Detached", "Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")
-RETRIABLE_BOTO_EXCEPTIONS = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError,),
-RETRIABLE_ASG_EXCEPTIONS = (ASGError, ASGNotFound)
-RETRIABLE_SERVICE_EXCEPTIONS = (*RETRIABLE_BOTO_EXCEPTIONS, *RETRIABLE_ASG_EXCEPTIONS, EC2Error)
+BOTO_EXCEPTIONS = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError,),
+ASG_EXCEPTIONS = (ASGError, ASGNotFound)
+AWS_EXCEPTIONS = (*BOTO_EXCEPTIONS, *ASG_EXCEPTIONS, EC2Error)
 
 def set_running_inst_type(gname, itype, progr, batch=1):
     """update running instances in an ASG to have a new instance type without destroying them. This is faster
@@ -349,7 +348,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
             try:
                 for i in ilst:
                     ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
-            except RETRIABLE_BOTO_EXCEPTIONS as e:
+            except BOTO_EXCEPTIONS as e:
                 raise AdjustError("failed to adjust instance '{}' to type '{}'; exception: {}".format(i, itype, str(e)),
                                   status="failed", reason="adjust-failed")
 
@@ -360,7 +359,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 retry = False
                 try:
                     ec2.start_instances(InstanceIds = ilst)
-                except RETRIABLE_BOTO_EXCEPTIONS as x:
+                except BOTO_EXCEPTIONS as x:
                     c = getattr(x,"response",{}).get("Error",{}).get("Code","")
                     # we MAY get an error that is transient, something like:
                     #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
@@ -375,7 +374,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
 
                 with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
                     wait_for_inst_state(ilst, "running", ps)
-            except RETRIABLE_SERVICE_EXCEPTIONS as e:
+            except AWS_EXCEPTIONS as e:
                 raise AdjustError("failed to start instances {}; exception: {}".format(ilst, str(e)),
                                   status="failed", reason="start-failed")
 
@@ -416,7 +415,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 progr.add(progress_weights["8svc"] / nbatches)
                 with progr.stage(progress_weights["9wsvc"] / nbatches) as ps:
                     wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
-            except RETRIABLE_SERVICE_EXCEPTIONS as e:
+            except AWS_EXCEPTIONS as e:
                 raise AdjustError("failed to put instances {} back in service; exception: {}"
                                   "".format(ilst_stdby, str(e)), status="rejected", reason="scheduling-failed")
 
@@ -473,7 +472,7 @@ class A(adjust.Adjust):
         return list(map(self.acq_version, insts))
 
     def get_ver_id(self, insts):
-        return hash_string(''.join(self.get_inst_vers_list(insts)))
+        return hash_string(' '.join(self.get_inst_vers_list(insts)))
 
     def get_mon_inst_ids(self):
         ret = {}
@@ -495,7 +494,7 @@ class A(adjust.Adjust):
         target_insts = self.get_groups_insts(self.get_cfg_asgs())
         try:
             ref_insts = self.get_groups_insts([ref_asg]) if has_ref else None
-        except RETRIABLE_SERVICE_EXCEPTIONS as e:
+        except AWS_EXCEPTIONS as e:
             raise RefASGUnavailableException(original=e)
         return target_insts, ref_insts
 
@@ -555,11 +554,11 @@ class A(adjust.Adjust):
                 continue
             ref_asgs_unavailable_exc = ''
             mon = self.get_mon_spcs(target_insts, ref_insts)  # Get fresh env state for monitoring checks
-            if mon["runtime_id"] != mon0["runtime_id"]:
-                # Track multiple target asg restarts by increasing the counter and resetting runtime_id0
-                # to the last retrieved target asg's runtime_id.
-                target_asgs_restarts += 1
             target_asgs_updated = mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']
+            # Track multiple target asg restarts by increasing the counter and resetting runtime_id0
+            #   to the last retrieved target asg's runtime_id.
+            target_asgs_restarts = target_asgs_restarts + 1 if mon["runtime_id"] != mon0["runtime_id"] \
+                else target_asgs_restarts
             if ref_insts:
                 ref_asgs_updated = mon["ref_spec_id"] != mon0["ref_spec_id"]
                 ref_asgs_scaled = mon["ref_runtime_count"] != mon0["ref_runtime_count"]
