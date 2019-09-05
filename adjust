@@ -541,6 +541,7 @@ class A(adjust.Adjust):
                 target_insts, ref_insts = self.get_target_ref_insts()
             except RefASGUnavailableException as e:
                 ref_asgs_unavailable_exc = str(e.original)
+                expired = time.time() - start >= period
                 continue
             ref_asgs_unavailable_exc = ''
             mon = self.get_mon_spcs(target_insts, ref_insts)  # Get fresh env state for monitoring checks
