@@ -521,9 +521,13 @@ class A(adjust.Adjust):
             r.extend(insts)
         return self.sort_instances(r)
 
+    def monitor(self):
+        target_insts, ref_insts = self.get_target_ref_insts()
+        return self.get_mon_spcs(target_insts, ref_insts), target_insts, ref_insts
+
     def settle(self, period=SETTLE_TIME):
-        target_insts0, ref_insts0 = self.get_target_ref_insts()
-        mon0 = mon = self.get_mon_spcs(target_insts0, ref_insts0)  # Get initial env state for monitoring
+        mon0, _, ref_insts0 = self.monitor()
+        mon = mon0
         expired = False
         start = time.time()
         # Check-failure counters and checkboxes
@@ -538,13 +542,13 @@ class A(adjust.Adjust):
         while not expired:
             time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
             try:
-                target_insts, ref_insts = self.get_target_ref_insts()
+                # Get fresh env state for monitoring checks
+                mon, _, ref_insts = self.monitor()
             except RefASGUnavailableException as e:
                 ref_asgs_unavailable_exc = str(e.original)
                 expired = time.time() - start >= period
                 continue
             ref_asgs_unavailable_exc = ''
-            mon = self.get_mon_spcs(target_insts, ref_insts)  # Get fresh env state for monitoring checks
             target_asgs_updated = mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']
             # Track multiple target asg restarts by increasing the counter.
             target_asgs_restarts = target_asgs_restarts + 1 if mon["runtime_id"] != mon0["runtime_id"] \
@@ -586,7 +590,7 @@ class A(adjust.Adjust):
         return mon
 
     def query(self):
-        m = self.get_mon_spcs(*self.get_target_ref_insts())
+        m, _, _ = self.monitor()
         if cfg.get('ref_asg'):
             m.update(self.get_mon_inst_ids())
         comps = {}
