@@ -344,39 +344,30 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 wait_for_inst_state(ilst, "stopped", ps)
 
             # modify instance type
-            i = None
-            try:
-                for i in ilst:
-                    ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
-            except BOTO_EXCEPTIONS as e:
-                raise AdjustError("failed to adjust instance '{}' to type '{}'; exception: {}".format(i, itype, str(e)),
-                                  status="failed", reason="adjust-failed")
+            for i in ilst:
+                ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
 
             progr.add(progress_weights["5mod"] / nbatches)
 
+            # restart them (retry ONCE, there is a rare condition where modify_instance_attribute hasn't propagated yet)
+            retry = False
             try:
-                # restart them (retry ONCE, there is a rare condition where modify_instance_attribute hasn't propagated yet)
-                retry = False
-                try:
-                    ec2.start_instances(InstanceIds = ilst)
-                except BOTO_EXCEPTIONS as x:
-                    c = getattr(x,"response",{}).get("Error",{}).get("Code","")
-                    # we MAY get an error that is transient, something like:
-                    #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
-                    # retry once, if the error code indicates this might be the case
-                    if c != "InvalidParameterValue":
-                        raise
-                    retry = True
-                if retry:
-                    time.sleep(1)
-                    ec2.start_instances(InstanceIds = ilst)
-                progr.add(progress_weights["6start"] / nbatches)
+                ec2.start_instances(InstanceIds = ilst)
+            except BOTO_EXCEPTIONS as x:
+                c = getattr(x,"response",{}).get("Error",{}).get("Code","")
+                # we MAY get an error that is transient, something like:
+                #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
+                # retry once, if the error code indicates this might be the case
+                if c != "InvalidParameterValue":
+                    raise
+                retry = True
+            if retry:
+                time.sleep(1)
+                ec2.start_instances(InstanceIds = ilst)
+            progr.add(progress_weights["6start"] / nbatches)
 
-                with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
-                    wait_for_inst_state(ilst, "running", ps)
-            except AWS_EXCEPTIONS as e:
-                raise AdjustError("failed to start instances {}; exception: {}".format(ilst, str(e)),
-                                  status="failed", reason="start-failed")
+            with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
+                wait_for_inst_state(ilst, "running", ps)
 
             restarted = True
 
