@@ -623,7 +623,13 @@ class A(adjust.Adjust):
             if not t:
                 continue # not set
             with progr.stage(grp_weight) as p_stage:
-                set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
+                try:
+                    set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
+                except AWS_EXCEPTIONS as e:
+                    raise AdjustError('failed to adjust instances of group "{}"; exception: {}'.format(g, str(e)),
+                                      status="failed", reason="adjust-failed")
+                except AdjustError:
+                    raise
 
         mon = self.settle(self.input_data.get('control', {}).get('settlement'))
 
