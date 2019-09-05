@@ -371,6 +371,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
             progr.add(progress_weights["8svc"] / nbatches)
             with progr.stage(progress_weights["9wsvc"] / nbatches) as ps:
                 wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
+            return
 
 
 class A(adjust.Adjust):
