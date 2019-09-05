@@ -545,8 +545,7 @@ class A(adjust.Adjust):
             ref_asgs_unavailable_exc = ''
             mon = self.get_mon_spcs(target_insts, ref_insts)  # Get fresh env state for monitoring checks
             target_asgs_updated = mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']
-            # Track multiple target asg restarts by increasing the counter and resetting runtime_id0
-            #   to the last retrieved target asg's runtime_id.
+            # Track multiple target asg restarts by increasing the counter.
             target_asgs_restarts = target_asgs_restarts + 1 if mon["runtime_id"] != mon0["runtime_id"] \
                 else target_asgs_restarts
             if ref_insts:
