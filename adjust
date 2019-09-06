@@ -399,9 +399,9 @@ class A(adjust.Adjust):
                     yield from instances
 
             monitoring_groups = (('instance_ids', gnames), ('ref_instance_ids', ref_gnames))
-            for mgroup, gnames in monitoring_groups:
+            for mgroup, mgnames in monitoring_groups:
                 try:
-                    monitoring[mgroup] = list(set(map(extract_prop, get_instances_from_group(gnames))))
+                    monitoring[mgroup] = list(set(map(extract_prop, get_instances_from_group(mgnames))))
                 except Exception as e:
                     raise Exception('Error getting a list of instance ids for monitoring group "{}"\n'
                                     '> {}: {}'.format(mgroup, e.__class__.__name__, str(e)))
