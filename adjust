@@ -587,6 +587,9 @@ class A(adjust.Adjust):
                 ref_asgs_unavailable_exc = str(e.original)
                 expired = (time.time() - start) >= period
                 continue
+            except Exception as e:
+                raise AdjustError("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__,
+                                                                                              str(e)))
             ref_asgs_unavailable_exc = ''
             target_asgs_updated = mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']
             # Track multiple target asg restarts by increasing the counter.
