@@ -596,11 +596,15 @@ class A(adjust.Adjust):
             target_asgs_restarts = target_asgs_restarts + 1 if mon["runtime_id"] != mon0["runtime_id"] \
                 else target_asgs_restarts
             if ref_insts:
-                ref_asgs_updated = mon["ref_spec_id"] != mon0["ref_spec_id"]
-                ref_asgs_scaled = mon["ref_runtime_count"] != mon0["ref_runtime_count"]
-                ref_inconsistent = self.get_inst_spcs_list(ref_insts) != self.get_inst_spcs_list(ref_insts0) or \
-                                   self.get_inst_vers_list(ref_insts) != self.get_inst_vers_list(ref_insts0)
-                target_ref_version_mismatch = mon["version_id"] != mon["ref_version_id"]
+                if not ref_asgs_updated:
+                    ref_asgs_updated = mon["ref_spec_id"] != mon0["ref_spec_id"]
+                if not ref_asgs_scaled:
+                    ref_asgs_scaled = mon["ref_runtime_count"] != mon0["ref_runtime_count"]
+                if not ref_inconsistent:
+                    ref_inconsistent = self.get_inst_spcs_list(ref_insts) != self.get_inst_spcs_list(ref_insts0) or \
+                                       self.get_inst_vers_list(ref_insts) != self.get_inst_vers_list(ref_insts0)
+                if not target_ref_version_mismatch:
+                    target_ref_version_mismatch = mon["version_id"] != mon["ref_version_id"]
             mon0 = mon
             expired = (time.time() - start) >= period  # Update settlement period status (i.e. whether done or not)
         if target_asgs_updated:
