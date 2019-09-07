@@ -632,7 +632,10 @@ class A(adjust.Adjust):
         return mon
 
     def query(self):
-        m, _, _ = self.monitor()
+        try:
+            m, _, _ = self.monitor()
+        except Exception as e:
+            raise Exception("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__, str(e)))
         if cfg.get('ref_asg'):
             m.update(self.get_mon_inst_ids())
         comps = {}
