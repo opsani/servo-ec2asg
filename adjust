@@ -115,6 +115,9 @@ def read_config():
     try:
         d = d[CFG_SECTION]
         d["asg"] # access, to verify it exists
+        if len((d['asg'] or '').split(',')) > 1:
+            assert d.get('control', {}).get('userdata', {}).get('deployment') is None, \
+                'Multiple target ASG\'s in Canary mode are not supported.'
     except KeyError:
         raise ConfigError("configuration data does not contain valid data in '{}'".format(CFG_SECTION))
 
