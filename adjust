@@ -354,6 +354,10 @@ def set_running_inst_type(gname, itype, progr, batch=1):
     progr.add(progress_weights["0qry"])
     if not insts:
         return
+    if cfg.get('control', {}).get('userdata', {}).get('deployment'):
+        if len(insts) >= 2:
+            raise AdjustError("Cannot adjust multiple instances in a target ASG "
+                              "in Canary mode. This use case is not supported at the moment.")
 
     asg_insts = { i['InstanceId'] : i for i in g["Instances"] } # here we have the ASG lifecycle status, keyed by inst. ID
 

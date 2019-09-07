@@ -49,3 +49,12 @@ monitoring:
 `inst_ids_asg` - which group to use to extract instance ids that would be treated as `canary` instances.
 `ref_inst_ids_asg` - which group to use to extract instance ids that would be treated as `reference` or in other words `production` instances.
 `all_inst_ids_param` - which parameter from [EC2 Describe Instances API response](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html#API_DescribeInstances_ResponseElements) section `<instancesSet>.<item>` to use. Note: this property should always begin with capital letter.
+
+## Canary mode
+
+Canary mode supports only one target ASG with only one instance in it. To set up Canary mode, define in configuration file under root-level key `ec2asg:` following structure:
+```yaml
+control:
+    userdata:
+        deployment: referenceAsgName
+```
