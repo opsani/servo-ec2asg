@@ -338,8 +338,8 @@ s = sum(progress_weights.values())
 progress_weights = { k:v/s for k,v in progress_weights.items() }
 
 ASG_FINAL_STATES = ("Detaching", "Detached", "Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")
-BOTO_EXCEPTIONS = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError,),
-ASG_EXCEPTIONS = (ASGError, ASGNotFound)
+BOTO_EXCEPTIONS = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError,)
+ASG_EXCEPTIONS = (ASGError,)
 AWS_EXCEPTIONS = (*BOTO_EXCEPTIONS, *ASG_EXCEPTIONS, EC2Error)
 
 def set_running_inst_type(gname, itype, progr, batch=1):
