@@ -485,7 +485,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def acq_runtime(inst):
-        return {'instance_id': inst['InstanceId'], 'state': inst['State']['Name']}
+        return {'instance_id': inst['InstanceId']}
 
     def get_runt_id(self, insts):
         return get_hash(list(map(self.acq_runtime, insts)))
