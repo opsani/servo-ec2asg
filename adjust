@@ -31,6 +31,50 @@ INST_TYPES=('t1.micro','t2.nano','t2.micro','t2.small','t2.medium','t2.large','t
 CFG_FILE = "./config.yaml"
 CFG_SECTION = "ec2asg"
 
+# === compute hash of arbitrary data struct
+# (copied inline from skopos/.../plugins/spec_hash_helper.py)
+
+
+def get_hash(data):
+    """md5 hash of Python data. This is limited to scalars that are convertible to string and container
+    structures (list, dict) containing such scalars. Some data items are not distinguishable, if they have
+    the same representation as a string, e.g., hash(b'None') == hash('None') == hash(None)"""
+    # _dbg("get_hash", data)
+    hasher = hashlib.md5()
+    dump_container(data, hasher.update)
+    return hasher.hexdigest()
+
+
+def dump_container(c, func):
+    """stream the contents of a container as a string through a function
+    in a repeatable order, suitable, e.g., for hashing
+    """
+    #
+    if isinstance(c, dict): # dict
+        func("{".encode('utf-8'))
+        for k in sorted(c):# for all repeatable
+            func("{}:".format(k).encode('utf-8'))
+            dump_container(c[k], func)
+            func(",".encode('utf-8'))
+        func("}".encode('utf-8'))
+    elif isinstance(c, list): # list
+        func("[".encode('utf-8'))
+        for k in c:# for all repeatable
+            dump_container(k, func)
+            func(",".encode('utf-8'))
+        func("]".encode('utf-8'))
+    else: # everything else
+        if isinstance(c, type(b'')):
+            pass # already a stream, keep as is
+        elif isinstance(c, str):
+            # encode to stream explicitly here to avoid implicit encoding to ascii
+            c = c.encode('utf-8')
+        else:
+            c = str(c).encode('utf-8')  # convert to string (e.g., if integer)
+        func(c)         # simple value, string or convertible-to-string
+
+# ===
+
 class ASGError(Exception):
     pass
 
@@ -411,11 +455,6 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                                   "".format(ilst_stdby, str(e)), status="rejected", reason="scheduling-failed")
 
 
-def hash_string(s):
-    # return s  # for debugging
-    return hashlib.sha1(s.encode('utf-8')).hexdigest()
-
-
 class A(adjust.Adjust):
 
     def insts_by_id(self, instance_ids):
@@ -442,14 +481,14 @@ class A(adjust.Adjust):
         return list(map(self.acq_spec, insts))
 
     def get_spc_id(self, insts):
-        return hash_string(' '.join(set(self.get_inst_spcs_list(insts))))
+        return get_hash(set(self.get_inst_spcs_list(insts)))
 
     @staticmethod
     def acq_runtime(inst):
         return '{}: {};'.format(inst['InstanceId'], inst['State']['Name'])
 
     def get_runt_id(self, insts):
-        return hash_string(' '.join(map(self.acq_runtime, insts)))
+        return get_hash(list(map(self.acq_runtime, insts)))
 
     @staticmethod
     def get_runt_cnt(insts):
@@ -463,7 +502,7 @@ class A(adjust.Adjust):
         return list(map(self.acq_version, insts))
 
     def get_ver_id(self, insts):
-        return hash_string(' '.join(self.get_inst_vers_list(insts)))
+        return get_hash(self.get_inst_vers_list(insts))
 
     def get_mon_inst_ids(self):
         ret = {}
