@@ -442,7 +442,7 @@ class A(adjust.Adjust):
         return list(map(self.acq_spec, insts))
 
     def get_spc_id(self, insts):
-        return hash_string(' '.join(self.get_inst_spcs_list(insts)))
+        return hash_string(' '.join(set(self.get_inst_spcs_list(insts))))
 
     @staticmethod
     def acq_runtime(inst):
