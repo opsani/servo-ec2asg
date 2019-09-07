@@ -475,7 +475,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def acq_spec(inst):
-        return '{}: {};'.format(inst['ImageId'], inst['InstanceType'])
+        return {'ami': inst['ImageId'], 'instance_type': inst['InstanceType']}
 
     def get_inst_spcs_list(self, insts):
         return list(map(self.acq_spec, insts))
@@ -485,7 +485,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def acq_runtime(inst):
-        return '{}: {};'.format(inst['InstanceId'], inst['State']['Name'])
+        return {'instance_id': inst['InstanceId'], 'state': inst['State']['Name']}
 
     def get_runt_id(self, insts):
         return get_hash(list(map(self.acq_runtime, insts)))
@@ -496,7 +496,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def acq_version(inst):
-        return inst['ImageId']
+        return {'ami': inst['ImageId']}
 
     def get_inst_vers_list(self, insts):
         return list(map(self.acq_version, insts))
