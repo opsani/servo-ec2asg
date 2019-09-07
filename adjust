@@ -686,7 +686,7 @@ class A(adjust.Adjust):
                 try:
                     set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
                 except AWS_EXCEPTIONS as e:
-                    raise AdjustError('failed to adjust instances of group "{}"; exception: {}'.format(g, str(e)),
+                    raise AdjustError('failed to adjust instances of target asg "{}"; exception: {}'.format(g, str(e)),
                                       status="failed", reason="adjust-failed")
                 except AdjustError:
                     raise
