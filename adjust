@@ -502,7 +502,7 @@ class A(adjust.Adjust):
         return list(map(self.acq_version, insts))
 
     def get_ver_id(self, insts):
-        return get_hash(self.get_inst_vers_list(insts))
+        return get_hash(set(self.get_inst_vers_list(insts)))
 
     def get_mon_inst_ids(self):
         ret = {}
