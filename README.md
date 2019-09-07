@@ -58,3 +58,7 @@ control:
     userdata:
         deployment: referenceAsgName
 ```
+
+## Saturation mode
+
+Multiple target ASGs with multiple instances in them are allowed.
