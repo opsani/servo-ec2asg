@@ -38,17 +38,18 @@ If the driver is not ran from an AWS EC2 instance that has appropriate role sett
     aws_access_key_id = AAAAAAAAAAAAAAAAAAAA
     aws_secret_access_key = ssssssssssssssssssssssssssssssssssssssss
 
-You can extract particular group's instance ids for monitoring by a measure driver. To do so, define section `monitoring` using an example below.
+Canary mode applications may configure this driver to expose instance IDs for both the target (canary) app ASG and the reference app ASGs.  If configured, these IDs are provided under a top level `monitoring` key in the response to the `query` command.  Measure drivers, such as the NewRelic driver, may query the adjust driver to obtain these IDs to distinguish metrics sources.  To enable this functionality, include in the ec2asg driver config both the `asg` (as above) and a `ref_asg`, as in the following example.
 
 ```yaml
-monitoring:
-    inst_ids_asg: test-asg
-    ref_inst_ids_asg: ref-test-asg
-    all_inst_ids_param: InstanceId
+ec2asg:
+    asg: canary-asg
+    batch_size: 1
+    ref_asg: ref-asg1,ref-asg2
+    asg_inst_param: InstanceId
 ```  
-`inst_ids_asg` - which group to use to extract instance ids that would be treated as `canary` instances.
-`ref_inst_ids_asg` - which group to use to extract instance ids that would be treated as `reference` or in other words `production` instances.
-`all_inst_ids_param` - which parameter from [EC2 Describe Instances API response](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html#API_DescribeInstances_ResponseElements) section `<instancesSet>.<item>` to use. Note: this property should always begin with capital letter.
+- `asg` - group used to extract instance IDs for the target or canary app.  Presently this supports a single ASG in canary mode (single component).
+- `ref_asg` - group(s) used to extract instance ids for the reference or production app.  Multiple ASG names may be specified using a comma separated string.
+- `asg_inst_param` - parameter from [EC2 Describe Instances API response](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeInstances.html#API_DescribeInstances_ResponseElements) section `<instancesSet>.<item>` used to distinguish instance IDs. Note: this property should always begin with a capital letter.
 
 ## Canary mode
 

@@ -604,6 +604,8 @@ class A(adjust.Adjust):
             insts, _ = get_asg_insts(name)
             insts = map(lambda i: i['InstanceId'], insts)
             ret.setdefault('ref_instance_ids', []).extend(insts)
+        assert ret['ref_instance_ids'], 'Reference ASGs are empty. ' \
+                                        'There should be at least one instance in the specified ASGs.'
         return ret
 
     def monitor(self):
