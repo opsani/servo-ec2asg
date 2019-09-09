@@ -576,7 +576,7 @@ class A(adjust.Adjust):
 
     def get_group_insts(self, name):
         g = get_group(name)
-        inst_ids = [i["InstanceId"] for i in g["Instances"]]
+        inst_ids = [i["InstanceId"] for i in g["Instances"] if i["LifecycleState"] == "InService"]
         insts = list(self.insts_by_id(inst_ids))
         return self.sort_instances(insts)
 
