@@ -601,7 +601,7 @@ class A(adjust.Adjust):
         target_app = App(target_asgs)
         ref_asgs = self.get_cfg_ref_asgs()
         try:
-            ref_app = App(ref_asgs) if ref_asgs is not None else None
+            ref_app = App(ref_asgs) if ref_asgs else None
         except ASGUnavailableException as e:
             raise RefASGUnavailableException(original=e.original)
         ret = {
