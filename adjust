@@ -599,7 +599,6 @@ class A(adjust.Adjust):
         # Check-failure counters and checkboxes
         target_asgs_restarts = 0
         ref_asgs_unavailable_exc = ''
-        ref_asgs_updated = False
         ref_asgs_scaled = False
         ref_inconsistent = False
         target_ref_version_mismatch = False
@@ -624,10 +623,11 @@ class A(adjust.Adjust):
             target_asgs_restarts = target_asgs_restarts + 1 if mon["runtime_id"] != mon0["runtime_id"] \
                 else target_asgs_restarts
             if ref_insts:
-                if not ref_asgs_updated:
-                    ref_asgs_updated = mon["ref_spec_id"] != mon0["ref_spec_id"]
                 if not ref_asgs_scaled:
                     ref_asgs_scaled = mon["ref_runtime_count"] != mon0["ref_runtime_count"]
+                if mon["ref_spec_id"] != mon0["ref_spec_id"]:
+                    raise AdjustError("reference application configuration was modified unexpectedly",
+                                      status="transient-failure", reason="ref-app-update")
                 if not ref_inconsistent:
                     ref_inconsistent = self.get_inst_spcs_list(ref_insts) != self.get_inst_spcs_list(ref_insts0) or \
                                        self.get_inst_vers_list(ref_insts) != self.get_inst_vers_list(ref_insts0)
@@ -648,9 +648,6 @@ class A(adjust.Adjust):
             raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                               "exception: {}".format(ref_asgs_unavailable_exc),
                               status="aborted", reason="ref-app-unavailable")
-        if ref_asgs_updated:
-            raise AdjustError("reference application configuration was modified unexpectedly",
-                              status="transient-failure", reason="ref-app-update")
         if ref_asgs_scaled:
             raise AdjustError("reference application has scaled during settlement period",
                               status="transient-failure", reason="ref-app-scale")
