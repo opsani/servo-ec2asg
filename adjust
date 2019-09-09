@@ -4,6 +4,8 @@ import sys
 import os
 
 import time
+from threading import Timer
+
 import boto3
 import botocore.exceptions # not accessible via boto3
 import yaml
@@ -279,12 +281,31 @@ class Progress(object):
     p = 0.0
     # p0 = 0.0 # p at start-of-stage
     parent = None
+    last_msg = None
+    timer = None
 
-    def report(self, msg = None): # this can be replaced to change how progress updates are sent
-        d = {"progress":int(round(self.p*100.0))}
+    def start_timer(self):
+        self.stop_timer()
+        self.timer = Timer(5, self.print_progress)
+        self.timer.start()
+
+    def stop_timer(self):
+        if self.timer:
+            self.timer.cancel()
+
+    def print_progress(self):
+        d = {"progress": int(round(self.p * 100.0))}
+        if self.last_msg:
+            d["message"] = self.last_msg
+        print(json_enc(d))
+        self.start_timer()
+
+    def report(self, msg): # this can be replaced to change how progress updates are sent
         if msg:
-            d["message"] = msg
-        print (json_enc(d))
+            if self.parent:
+                self.parent.report(msg)
+            else:
+                self.last_msg = msg
 
     def set(self, v):
         """NOTE all progress-changing methods should end up calling this"""
@@ -294,7 +315,6 @@ class Progress(object):
         if self.parent:
             self.parent.set(self.p0 + v*self.weight)
             return
-        self.report()
 
     def add(self, v):
         self.set(self.p + v)
@@ -676,26 +696,30 @@ class A(adjust.Adjust):
             raise Exception("input data contains unknown components: "+ repr(list(data.keys())))
         # FIXME: correct behavior on 'extra' data (e.g. unknown comps or unknown settings) - ignore or fail?
         progr = Progress()
-        grp_weight = 0.9/float(len(lst)) # empty settings counted as well (cosmetic, will cause uneven progress advance, FIXME)
-        n = 0
-        for g,v in lst:
-            progr.set(grp_weight * float(n))
-            n = n+1
-            if "settings" not in v: continue
-            t = v["settings"].get("inst_type", None)
-            if not t:
-                continue # not set
-            with progr.stage(grp_weight) as p_stage:
-                try:
-                    set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
-                except AWS_EXCEPTIONS as e:
-                    raise AdjustError('failed to adjust instances of target asg "{}"; exception: {}'.format(g, str(e)),
-                                      status="failed", reason="adjust-failed")
-                except AdjustError:
-                    raise
+        progr.start_timer()
+        try:
+            grp_weight = 0.9/float(len(lst)) # empty settings counted as well (cosmetic, will cause uneven progress advance, FIXME)
+            n = 0
+            for g,v in lst:
+                progr.set(grp_weight * float(n))
+                n = n+1
+                if "settings" not in v: continue
+                t = v["settings"].get("inst_type", None)
+                if not t:
+                    continue # not set
+                with progr.stage(grp_weight) as p_stage:
+                    try:
+                        set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
+                    except AWS_EXCEPTIONS as e:
+                        raise AdjustError('failed to adjust instances of target asg "{}"; exception: {}'.format(g, str(e)),
+                                          status="failed", reason="adjust-failed")
+                    except AdjustError:
+                        raise
 
-        with progr.stage(0.1) as p_stage:
-            mon = self.settle(p_stage, self.input_data.get('control', {}).get('settlement', SETTLE_TIME))
+            with progr.stage(0.1) as p_stage:
+                mon = self.settle(p_stage, self.input_data.get('control', {}).get('settlement', SETTLE_TIME))
+        finally:
+            progr.stop_timer()
         return {"status":"ok", "monitoring": mon}
 
 if __name__ == "__main__":
