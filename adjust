@@ -591,26 +591,32 @@ class A(adjust.Adjust):
         return self.get_mon_spcs(target_insts, ref_insts), target_insts, ref_insts
 
     def settle(self, progr, period=SETTLE_TIME):
-        mon0, _, ref_insts0 = self.monitor()
+        try:
+            mon0, _, ref_insts0 = self.monitor()
+        except RefASGUnavailableException as e:
+            raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
+                              "exception: {}".format(str(e.original)),
+                              status="aborted", reason="ref-app-unavailable")
+        except Exception as e:
+            raise AdjustError("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__,
+                                                                                          str(e)))
         mon = mon0
         expired = False
         start = time.time()
         # Check-failure counters and checkboxes
         target_asgs_restarts = 0
-        ref_asgs_unavailable_exc = ''
         # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
         while not expired:
             try:
                 # Get fresh env state for monitoring checks
                 mon, _, ref_insts = self.monitor()
             except RefASGUnavailableException as e:
-                ref_asgs_unavailable_exc = str(e.original)
-                expired = (time.time() - start) >= period
-                continue
+                raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
+                                  "exception: {}".format(str(e.original)),
+                                  status="aborted", reason="ref-app-unavailable")
             except Exception as e:
                 raise AdjustError("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__,
                                                                                               str(e)))
-            ref_asgs_unavailable_exc = ''
             if mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']:
                 raise AdjustError("target asg configuration was modified unexpectedly",
                                   status="transient-failure", reason="app-update")
@@ -642,10 +648,6 @@ class A(adjust.Adjust):
             raise AdjustError("target asg {} restarted {} times in the last {} minutes {} seconds"
                               "".format(self.get_cfg_asgs(), target_asgs_restarts, period // 60, period % 60),
                               status="rejected", reason="unstable")
-        if ref_asgs_unavailable_exc:
-            raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
-                              "exception: {}".format(ref_asgs_unavailable_exc),
-                              status="aborted", reason="ref-app-unavailable")
         return mon
 
     def query(self):
