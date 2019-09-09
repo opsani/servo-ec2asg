@@ -571,7 +571,7 @@ class A(adjust.Adjust):
         target_insts, ref_insts = self.get_target_ref_insts()
         return self.get_mon_spcs(target_insts, ref_insts), target_insts, ref_insts
 
-    def settle(self, period=SETTLE_TIME):
+    def settle(self, progr, period=SETTLE_TIME):
         mon0, _, ref_insts0 = self.monitor()
         mon = mon0
         expired = False
@@ -614,6 +614,9 @@ class A(adjust.Adjust):
                     target_ref_version_mismatch = mon["version_id"] != mon["ref_version_id"]
             mon0 = mon
             expired = (time.time() - start) >= period  # Update settlement period status (i.e. whether done or not)
+            progr.set((time.time() - start) / period)
+            progr.report('Settlement phase is in progress. Started {:.0f} seconds ago. {:.0f} seconds to go. '
+                         'Total is {:d} seconds.'.format((time.time() - start), period - (time.time() - start), period))
         if target_asgs_updated:
             raise AdjustError("target asg configuration was modified unexpectedly",
                               status="transient-failure", reason="app-update")
@@ -673,7 +676,7 @@ class A(adjust.Adjust):
             raise Exception("input data contains unknown components: "+ repr(list(data.keys())))
         # FIXME: correct behavior on 'extra' data (e.g. unknown comps or unknown settings) - ignore or fail?
         progr = Progress()
-        grp_weight = 1.0/float(len(lst)) # empty settings counted as well (cosmetic, will cause uneven progress advance, FIXME)
+        grp_weight = 0.9/float(len(lst)) # empty settings counted as well (cosmetic, will cause uneven progress advance, FIXME)
         n = 0
         for g,v in lst:
             progr.set(grp_weight * float(n))
@@ -691,8 +694,8 @@ class A(adjust.Adjust):
                 except AdjustError:
                     raise
 
-        mon = self.settle(self.input_data.get('control', {}).get('settlement', SETTLE_TIME))
-
+        with progr.stage(0.1) as p_stage:
+            mon = self.settle(p_stage, self.input_data.get('control', {}).get('settlement', SETTLE_TIME))
         return {"status":"ok", "monitoring": mon}
 
 if __name__ == "__main__":
