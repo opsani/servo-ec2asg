@@ -512,6 +512,18 @@ class App:
     def runtime_count(self):
         return sum(group.runtime_count() for group in self.groups)
 
+    def instance_ids(self):
+        ids = set()
+        for group in self.groups:
+            ids.update(group.instance_ids())
+        return ids
+
+    def new_instances(self, prevapp):
+        return self.instance_ids() - prevapp.instance_ids()
+
+    def gone_instances(self, tracking_insts):
+        return tracking_insts - self.instance_ids()
+
 
 class Group:
     def __init__(self, gname):
@@ -519,6 +531,9 @@ class Group:
         insts, group = get_asg_insts(gname)
         self.desc = group
         self.instances = [Instance(desc=inst) for inst in insts]
+
+    def instance_ids(self):
+        return (inst.instance_id() for inst in self.instances)
 
     def version_ids_set(self):
         return set(map(lambda instance: instance.version_id(), self.instances))
@@ -541,6 +556,9 @@ class Instance:
     def __init__(self, desc):
         assert desc
         self.desc = desc
+
+    def instance_id(self):
+        return self.desc['InstanceId']
 
     def version_id(self):
         return self.desc['ImageId']
@@ -602,7 +620,7 @@ class A(adjust.Adjust):
 
     def settle(self, progr, period=SETTLE_TIME):
         try:
-            mon0, _, refapp0 = self.monitor()
+            mon0, targetapp0, _ = self.monitor()
         except RefASGUnavailableException as e:
             raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                               "exception: {}".format(str(e.original)),
@@ -614,12 +632,14 @@ class A(adjust.Adjust):
         expired = False
         start = time.time()
         # Check-failure counters and checkboxes
-        target_asgs_restarts = 0
+        new_inst_ids = set()
+        target_asg_restarted_once = False
+        target_asg_restarted_twice_or_more = False
         # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
         while not expired:
             try:
                 # Get fresh env state for monitoring checks
-                mon, _, refapp = self.monitor()
+                mon, targetapp, refapp = self.monitor()
             except RefASGUnavailableException as e:
                 raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                                   "exception: {}".format(str(e.original)),
@@ -630,9 +650,14 @@ class A(adjust.Adjust):
             if mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']:
                 raise AdjustError("target asg configuration was modified unexpectedly",
                                   status="transient-failure", reason="app-update")
-            # Track multiple target asg restarts by increasing the counter.
-            target_asgs_restarts = target_asgs_restarts + 1 if mon["runtime_id"] != mon0["runtime_id"] \
-                else target_asgs_restarts
+            new_inst_ids.update(targetapp.new_instances(targetapp0))
+            if new_inst_ids:
+                target_asg_restarted_once = True
+                gone = targetapp.gone_instances(new_inst_ids)
+                if gone:
+                    raise AdjustError('some of the target asg {} instances have restarted twice or more '
+                                      'during settlement period; most likely fail-restart cycle'
+                                      ''.format(self.get_cfg_asgs()), status="rejected", reason="unstable")
             if refapp:
                 if len(refapp.version_ids_set()) > 1:
                     raise AdjustError("reference application software version is not consistent among its replicas",
@@ -647,17 +672,14 @@ class A(adjust.Adjust):
                     raise AdjustError("reference application has scaled during settlement period",
                                       status="transient-failure", reason="ref-app-scale")
             mon0 = mon
+            targetapp0 = targetapp
             progr.set((time.time() - start) / period)
             progr.report('Settlement phase is in progress. Started {:.0f} seconds ago. {:.0f} seconds to go. '
                          'Total is {:d} seconds.'.format((time.time() - start), period - (time.time() - start), period))
             expired = (time.time() - start) >= period  # Update settlement period status (i.e. whether done or not)
             time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
-        if target_asgs_restarts == 1:
+        if target_asg_restarted_once:
             raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
-        if target_asgs_restarts > 1:
-            raise AdjustError("target asg {} restarted {} times in the last {} minutes {} seconds"
-                              "".format(self.get_cfg_asgs(), target_asgs_restarts, period // 60, period % 60),
-                              status="rejected", reason="unstable")
         return mon
 
     def query(self):
