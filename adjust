@@ -598,7 +598,6 @@ class A(adjust.Adjust):
         # Check-failure counters and checkboxes
         target_asgs_restarts = 0
         ref_asgs_unavailable_exc = ''
-        target_ref_version_mismatch = False
         # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
         while not expired:
             try:
@@ -622,14 +621,15 @@ class A(adjust.Adjust):
                 if len(self.get_insts_vers(ref_insts)) > 1:
                     raise AdjustError("reference application software version is not consistent among its replicas",
                                       status="aborted", reason="ref-app-inconsistent")
+                if mon["version_id"] != mon["ref_version_id"]:
+                    raise AdjustError("Target asg(s) software version is different from one in reference asg(s).",
+                                      status="rejected", reason="version-mismatch")
                 if mon["ref_spec_id"] != mon0["ref_spec_id"]:
                     raise AdjustError("reference application configuration was modified unexpectedly",
                                       status="transient-failure", reason="ref-app-update")
                 if mon["ref_runtime_count"] != mon0["ref_runtime_count"]:
                     raise AdjustError("reference application has scaled during settlement period",
                                       status="transient-failure", reason="ref-app-scale")
-                if not target_ref_version_mismatch:
-                    target_ref_version_mismatch = mon["version_id"] != mon["ref_version_id"]
             mon0 = mon
             progr.set((time.time() - start) / period)
             progr.report('Settlement phase is in progress. Started {:.0f} seconds ago. {:.0f} seconds to go. '
@@ -646,9 +646,6 @@ class A(adjust.Adjust):
             raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                               "exception: {}".format(ref_asgs_unavailable_exc),
                               status="aborted", reason="ref-app-unavailable")
-        if target_ref_version_mismatch:
-            raise AdjustError("Target asg(s) software version is different from one in reference asg(s).",
-                              status="rejected", reason="version-mismatch")
         return mon
 
     def query(self):
