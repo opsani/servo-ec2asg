@@ -500,15 +500,14 @@ class A(adjust.Adjust):
     def get_cfg_ref_asg():
         return cfg.get('control', {}).get('userdata', {}).get('deployment')
 
-    @staticmethod
-    def acq_spec(inst):
-        return '{ami} {inst_type}'.format(ami=inst['ImageId'], inst_type=inst['InstanceType'])
+    def acq_spec(self, inst):
+        return '{ver} {inst_type}'.format(ver=self.acq_version(inst), inst_type=inst['InstanceType'])
 
-    def get_inst_spcs_list(self, insts):
-        return list(map(self.acq_spec, insts))
+    def get_insts_spcs(self, insts):
+        return set(map(self.acq_spec, insts))
 
     def get_spc_id(self, insts):
-        return get_hash(set(self.get_inst_spcs_list(insts)))
+        return get_hash(self.get_insts_spcs(insts))
 
     @staticmethod
     def acq_runtime(inst):
@@ -525,11 +524,11 @@ class A(adjust.Adjust):
     def acq_version(inst):
         return '{ami}'.format(ami=inst['ImageId'])
 
-    def get_inst_vers_list(self, insts):
-        return list(map(self.acq_version, insts))
+    def get_insts_vers(self, insts):
+        return set(map(self.acq_version, insts))
 
     def get_ver_id(self, insts):
-        return get_hash(set(self.get_inst_vers_list(insts)))
+        return get_hash(self.get_insts_vers(insts))
 
     def get_mon_inst_ids(self):
         ret = {}
@@ -629,8 +628,8 @@ class A(adjust.Adjust):
                     raise AdjustError("reference application has scaled during settlement period",
                                       status="transient-failure", reason="ref-app-scale")
                 if not ref_inconsistent:
-                    ref_inconsistent = self.get_inst_spcs_list(ref_insts) != self.get_inst_spcs_list(ref_insts0) or \
-                                       self.get_inst_vers_list(ref_insts) != self.get_inst_vers_list(ref_insts0)
+                    ref_inconsistent = self.get_insts_spcs(ref_insts) != self.get_insts_spcs(ref_insts0) or \
+                                       self.get_insts_vers(ref_insts) != self.get_insts_vers(ref_insts0)
                 if not target_ref_version_mismatch:
                     target_ref_version_mismatch = mon["version_id"] != mon["ref_version_id"]
             mon0 = mon
