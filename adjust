@@ -449,6 +449,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
             restarted = True
 
         finally:
+            start_err = None
             if not restarted: # an error occurred, attempt to start them (again, if needed), ignoring all errors
                 rs = 0
                 try:
@@ -464,28 +465,37 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                     for i in a["Reservations"]:
                         tmp_insts.extend(i["Instances"])
                     if not all( (i["State"]["Name"] == "running" for i in tmp_insts) ):
-                        print(file=sys.stderr)
-                        raise AdjustError("failed to start instances {}; "
-                                          "an error occurred during instance type update and some instances "
-                                          "could not be restarted. They will be returned to InService state anyway, "
-                                          "note this may cause the ASG to replace them".format(ilst),
-                                          status="failed", reason="start-failed")
+                        start_err = AdjustError("failed to start instances {}; "
+                                                "an error occurred during instance type update and some instances "
+                                                "could not be restarted. They will be returned to InService state anyway, "
+                                                "note this may cause the ASG to replace them".format(ilst),
+                                                status="failed", reason="start-failed")
                 except Exception as e:
-                    raise AdjustError("failed to start instances {}; "
-                                      "an error occurred during instance type update and an additional error occurred "
-                                      "when attempting to check the state of the instances. They will be returned to "
-                                      "InService state anyway, note this may cause the ASG to replace them. In "
-                                      "addition an error occurred: {}".format(ilst, str(e)),
-                                      status="failed", reason="start-failed")
+                    start_err = AdjustError("failed to start instances {}; "
+                                            "an error occurred during instance type update and an additional error occurred "
+                                            "when attempting to check the state of the instances. They will be returned to "
+                                            "InService state anyway, note this may cause the ASG to replace them. In "
+                                            "addition an error occurred: {}".format(ilst, str(e)),
+                                            status="failed", reason="start-failed")
             # re-add back to the ASG
             try:
                 r = asg.exit_standby(InstanceIds=ilst_stdby, AutoScalingGroupName = gname)
                 progr.add(progress_weights["8svc"] / nbatches)
                 with progr.stage(progress_weights["9wsvc"] / nbatches) as ps:
                     wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
+                if start_err:
+                    raise start_err
+                return
             except AWS_EXCEPTIONS as e:
-                raise AdjustError("failed to put instances {} back in service; exception: {}"
-                                  "".format(ilst_stdby, str(e)), status="rejected", reason="scheduling-failed")
+                postfix = "previously encountered: {}".format(str(start_err)) if start_err else ""
+                raise AdjustError("failed to put instances {} back in service; exception: {}; {}"
+                                  "".format(ilst_stdby, str(e), postfix).strip(),
+                                  status="rejected", reason="scheduling-failed")
+            except AdjustError:
+                raise
+            except Exception as e:
+                postfix = "previously encountered: {}".format(str(start_err)) if start_err else ""
+                raise Exception("{}; {}".format(str(e), postfix))
 
 
 class App:
