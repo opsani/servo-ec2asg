@@ -597,7 +597,6 @@ class A(adjust.Adjust):
         expired = False
         start = time.time()
         # Check-failure counters and checkboxes
-        target_asgs_updated = False
         target_asgs_restarts = 0
         ref_asgs_unavailable_exc = ''
         ref_asgs_updated = False
@@ -618,7 +617,9 @@ class A(adjust.Adjust):
                 raise AdjustError("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__,
                                                                                               str(e)))
             ref_asgs_unavailable_exc = ''
-            target_asgs_updated = mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']
+            if mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']:
+                raise AdjustError("target asg configuration was modified unexpectedly",
+                                  status="transient-failure", reason="app-update")
             # Track multiple target asg restarts by increasing the counter.
             target_asgs_restarts = target_asgs_restarts + 1 if mon["runtime_id"] != mon0["runtime_id"] \
                 else target_asgs_restarts
@@ -637,9 +638,6 @@ class A(adjust.Adjust):
             progr.set((time.time() - start) / period)
             progr.report('Settlement phase is in progress. Started {:.0f} seconds ago. {:.0f} seconds to go. '
                          'Total is {:d} seconds.'.format((time.time() - start), period - (time.time() - start), period))
-        if target_asgs_updated:
-            raise AdjustError("target asg configuration was modified unexpectedly",
-                              status="transient-failure", reason="app-update")
         if target_asgs_restarts == 1:
             raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
         if target_asgs_restarts > 1:
