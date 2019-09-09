@@ -567,7 +567,7 @@ class Instance:
         return '{} {}'.format(self.version_id(), self.desc['InstanceType'])
 
     def runtime_id(self):
-        return self.desc['InstanceId']
+        return self.instance_id()
 
 
 class A(adjust.Adjust):
@@ -675,7 +675,8 @@ class A(adjust.Adjust):
             targetapp0 = targetapp
             progr.set((time.time() - start) / period)
             progr.report('Settlement phase is in progress. Started {:.0f} seconds ago. {:.0f} seconds to go. '
-                         'Total is {:d} seconds.'.format((time.time() - start), period - (time.time() - start), period))
+                         'Total is {:d} seconds.'.format((time.time() - start), max(0, period - (time.time() - start)),
+                                                         period))
             expired = (time.time() - start) >= period  # Update settlement period status (i.e. whether done or not)
             time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
         if target_asg_restarted_once:
@@ -696,7 +697,7 @@ class A(adjust.Adjust):
             comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
         return desc
 
-    def adjust(self):
+    def adjust(self, data=None):
         groups = self.get_cfg_asgs()
         data = self.input_data["application"].get("components", {})
         # print (self.input_data, file=sys.stderr)
