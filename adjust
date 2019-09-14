@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import itertools
 import sys
 import os
 
@@ -231,14 +232,14 @@ def set_lc_inst_type():
     raise NotImplementedError
 
 
-def wait_for_activities(aid, progr = None):
+def wait_for_activities(aid, progr = None, timeout=ACTIVITY_TIMEOUT):
     """wait for asg activities to complete"""
 
     # NOTE: the wait is done with a constant-time poll; can be improved by using StartTime and Progress to make an estimate
     # of the completion time.
     wait_time = 0
     wait_inc = 2
-    while wait_time <= ACTIVITY_TIMEOUT:
+    while wait_time <= timeout:
 # valid 'StatusCode' values: 'PendingSpotBidPlacement'|'WaitingForSpotInstanceRequestId'|'WaitingForSpotInstanceId'|'WaitingForInstanceId'|'PreInService'|'InProgress'|'WaitingForELBConnectionDraining'|'MidLifecycleAction'|'WaitingForInstanceWarmup'|'Successful'|'Failed'|'Cancelled'
         time.sleep(wait_inc)
         wait_time += wait_inc
@@ -250,7 +251,7 @@ def wait_for_activities(aid, progr = None):
         if final:
             return
         if progr:
-            progr.set(float(wait_time) / ACTIVITY_TIMEOUT)
+            progr.set(float(wait_time) / timeout)
     else:
         raise ASGActivityTimeOutError("wait for asg activity timed out")
 
@@ -592,6 +593,58 @@ class A(adjust.Adjust):
         v = cfg.get('control', {}).get('userdata', {}).get('deployment', '') or ''
         return sorted(list(filter(str, map(lambda g: g.strip(), v.split(',')))))
 
+    @staticmethod
+    def get_asg_activities(gname, period=3600):
+        now = time.time()
+        token = None
+        while True:
+            kwargs = {'AutoScalingGroupName': gname}
+            if token:
+                kwargs['NextToken'] = token
+            resp = asg.describe_scaling_activities(**kwargs)
+            token = resp.get('NextToken')
+            activities = resp['Activities']
+            if activities:
+                for activity in activities:
+                    if (now - activity['StartTime'].timestamp()) <= period:
+                        yield activity
+                        continue
+                    break
+            break
+
+    def get_scaling_act_ids(self, gnames):
+        ids = list(itertools.chain(*((a["ActivityId"] for a in self.get_asg_activities(gname)
+                                      if a["StatusCode"] not in ("Successful", "Failed", "Cancelled"))
+                                     for gname in gnames)))
+        return ids
+
+    def wait_for_scaling_activities(self, gnames, progr=None):
+        biggest_cooldown = max(group['DefaultCooldown'] for group in
+                               asg.describe_auto_scaling_groups(AutoScalingGroupNames=gnames)['AutoScalingGroups'])
+        wait_time = biggest_cooldown + 5
+        try:
+            start = time.time()
+            while True:
+                ids = self.get_scaling_act_ids(gnames)
+                if ids:
+                    if progr:
+                        progr.report('Waiting for {} activities to complete.'.format(len(ids)))
+                    wait_for_activities(ids, timeout=600)
+                    start = time.time()
+                else:
+                    expired = (time.time() - start) > wait_time
+                    if expired:
+                        break
+                    time.sleep(5)
+        except BOTO_EXCEPTIONS as e:
+            raise Exception('Failed to wait for target and reference ASGs activities to complete. '
+                            'Exception -> {}: {}'.format(e.__class__.__name__, str(e)))
+        except ASGActivityTimeOutError:
+            ids = self.get_scaling_act_ids(gnames)
+            raise ASGActivityTimeOutError('Timed out waiting for incomplete activities to resolve. '
+                                          'Activity ids that were still in progress: {}'
+                                          ''.format(ids))
+
     def get_mon_inst_ids(self):
         ret = {}
         gnames = self.get_cfg_asgs()
@@ -631,9 +684,11 @@ class A(adjust.Adjust):
         return ret, target_app, ref_app
 
     def settle(self, progr, period=SETTLE_TIME):
+        all_asgs = (*self.get_cfg_asgs(), *self.get_cfg_ref_asgs())
         try:
             mon0, targetapp0, _ = self.monitor()
         except RefASGUnavailableException as e:
+            self.wait_for_scaling_activities(all_asgs, progr=progr)
             raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                               "exception: {}".format(str(e.original)),
                               status="aborted", reason="ref-app-unavailable")
@@ -660,6 +715,7 @@ class A(adjust.Adjust):
                 raise AdjustError("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__,
                                                                                               str(e)))
             if mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']:
+                self.wait_for_scaling_activities(all_asgs, progr=progr)
                 raise AdjustError("target asg configuration was modified unexpectedly",
                                   status="transient-failure", reason="app-update")
             new_inst_ids.update(targetapp.new_instances(targetapp0))
@@ -672,15 +728,19 @@ class A(adjust.Adjust):
                                       ''.format(self.get_cfg_asgs()), status="rejected", reason="unstable")
             if refapp:
                 if len(refapp.version_ids_set()) > 1:
+                    self.wait_for_scaling_activities(all_asgs, progr=progr)
                     raise AdjustError("reference application software version is not consistent among its replicas",
                                       status="aborted", reason="ref-app-inconsistent")
                 if mon["version_id"] != mon["ref_version_id"]:
+                    self.wait_for_scaling_activities(all_asgs, progr=progr)
                     raise AdjustError("Target asg(s) software version is different from one in reference asg(s).",
                                       status="rejected", reason="version-mismatch")
                 if mon["ref_spec_id"] != mon0["ref_spec_id"]:
+                    self.wait_for_scaling_activities(all_asgs, progr=progr)
                     raise AdjustError("reference application configuration was modified unexpectedly",
                                       status="transient-failure", reason="ref-app-update")
                 if mon["ref_runtime_count"] != mon0["ref_runtime_count"]:
+                    self.wait_for_scaling_activities(all_asgs, progr=progr)
                     raise AdjustError("reference application has scaled during settlement period",
                                       status="transient-failure", reason="ref-app-scale")
             mon0 = mon
