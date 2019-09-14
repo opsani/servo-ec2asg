@@ -651,7 +651,7 @@ class A(adjust.Adjust):
         if on_fail == 'destroy':
             group = get_group(gname)
             if group['DesiredCapacity'] == 0:
-                asg.update_auto_scaling_group(AutoScalingGroupName=gname, DesiredCapacity=1, MinSize=1)
+                asg.update_auto_scaling_group(AutoScalingGroupName=gname, DesiredCapacity=1)
                 return True
         return False
 
