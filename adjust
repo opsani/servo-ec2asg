@@ -618,10 +618,11 @@ class A(adjust.Adjust):
                                      for gname in gnames)))
         return ids
 
-    def wait_for_scaling_activities(self, gnames, progr=None):
-        biggest_cooldown = max(group['DefaultCooldown'] for group in
-                               asg.describe_auto_scaling_groups(AutoScalingGroupNames=gnames)['AutoScalingGroups'])
-        wait_time = biggest_cooldown + 5
+    def wait_for_scaling_activities(self, gnames, progr=None, wait_time=None):
+        if wait_time is None:
+            biggest_cooldown = max(group['DefaultCooldown'] for group in
+                                   asg.describe_auto_scaling_groups(AutoScalingGroupNames=gnames)['AutoScalingGroups'])
+            wait_time = biggest_cooldown + 5
         try:
             start = time.time()
             while True:
@@ -644,6 +645,15 @@ class A(adjust.Adjust):
             raise ASGActivityTimeOutError('Timed out waiting for incomplete activities to resolve. '
                                           'Activity ids that were still in progress: {}'
                                           ''.format(ids))
+
+    def scale_to_one_if_needed(self, gname):
+        on_fail = cfg.get('control', {}).get('on_fail', 'keep')
+        if on_fail == 'destroy':
+            group = get_group(gname)
+            if group['DesiredCapacity'] == 0:
+                asg.update_auto_scaling_group(AutoScalingGroupName=gname, DesiredCapacity=1, MinSize=1)
+                return True
+        return False
 
     def get_mon_inst_ids(self):
         ret = {}
@@ -799,6 +809,9 @@ class A(adjust.Adjust):
                     continue # not set
                 with progr.stage(grp_weight) as p_stage:
                     try:
+                        scaled = self.scale_to_one_if_needed([g])
+                        if scaled:
+                            self.wait_for_scaling_activities([g], wait_time=60)
                         set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
                     except AWS_EXCEPTIONS as e:
                         raise AdjustError('failed to adjust instances of target asg "{}"; exception: {}'.format(g, str(e)),
