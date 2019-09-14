@@ -622,7 +622,7 @@ class A(adjust.Adjust):
         if wait_time is None:
             biggest_cooldown = max(group['DefaultCooldown'] for group in
                                    asg.describe_auto_scaling_groups(AutoScalingGroupNames=gnames)['AutoScalingGroups'])
-            wait_time = biggest_cooldown + 5
+            wait_time = max(biggest_cooldown + 5, 60)
         try:
             start = time.time()
             while True:
