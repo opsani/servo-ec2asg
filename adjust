@@ -711,7 +711,6 @@ class A(adjust.Adjust):
         # Check-failure counters and checkboxes
         new_inst_ids = set()
         target_asg_restarted_once = False
-        target_asg_restarted_twice_or_more = False
         # Settlement cycle over a period of time (arg period) every X (SETTLE_CHECK_TIME) seconds
         while not expired:
             try:
@@ -809,7 +808,7 @@ class A(adjust.Adjust):
                     continue # not set
                 with progr.stage(grp_weight) as p_stage:
                     try:
-                        scaled = self.scale_to_one_if_needed([g])
+                        scaled = self.scale_to_one_if_needed(g)
                         if scaled:
                             self.wait_for_scaling_activities([g], wait_time=60)
                         set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
