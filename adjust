@@ -584,7 +584,7 @@ class Instance:
 class A(adjust.Adjust):
 
     @staticmethod
-    def get_cfg_asgs():
+    def get_cfg_target_asgs():
         v = cfg.get('asg', '') or ''
         return sorted(list(filter(str, map(lambda g: g.strip(), v.split(',')))))
 
@@ -592,6 +592,9 @@ class A(adjust.Adjust):
     def get_cfg_ref_asgs():
         v = cfg.get('control', {}).get('userdata', {}).get('deployment', '') or ''
         return sorted(list(filter(str, map(lambda g: g.strip(), v.split(',')))))
+
+    def get_cfg_all_asgs(self):
+        return (*self.get_cfg_target_asgs(), *self.get_cfg_ref_asgs())
 
     @staticmethod
     def get_asg_activities(gname, period=3600):
@@ -657,7 +660,7 @@ class A(adjust.Adjust):
 
     def get_mon_inst_ids(self):
         ret = {}
-        gnames = self.get_cfg_asgs()
+        gnames = self.get_cfg_target_asgs()
         ref_gnames = sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') or '').split(',')))))
         for name in gnames:
             insts, _ = get_asg_insts(name)
@@ -672,7 +675,7 @@ class A(adjust.Adjust):
         return ret
 
     def monitor(self):
-        target_asgs = self.get_cfg_asgs()
+        target_asgs = self.get_cfg_target_asgs()
         target_app = App(target_asgs)
         ref_asgs = self.get_cfg_ref_asgs()
         try:
@@ -694,7 +697,7 @@ class A(adjust.Adjust):
         return ret, target_app, ref_app
 
     def settle(self, progr, period=SETTLE_TIME):
-        all_asgs = (*self.get_cfg_asgs(), *self.get_cfg_ref_asgs())
+        all_asgs = self.get_cfg_all_asgs()
         try:
             mon0, targetapp0, _ = self.monitor()
         except RefASGUnavailableException as e:
@@ -734,7 +737,7 @@ class A(adjust.Adjust):
                 if gone:
                     raise AdjustError('some of the target asg {} instances have restarted twice or more '
                                       'during settlement period; most likely fail-restart cycle'
-                                      ''.format(self.get_cfg_asgs()), status="rejected", reason="unstable")
+                                      ''.format(self.get_cfg_target_asgs()), status="rejected", reason="unstable")
             if refapp:
                 if len(refapp.version_ids_set()) > 1:
                     self.wait_for_scaling_activities(all_asgs, progr=progr)
@@ -773,13 +776,13 @@ class A(adjust.Adjust):
             m.update(self.get_mon_inst_ids())
         comps = {}
         desc = { "application": {"components" : comps}, "monitoring": m }
-        for gname in self.get_cfg_asgs():
+        for gname in self.get_cfg_target_asgs():
             t = q(gname)
             comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
         return desc
 
     def adjust(self, data=None):
-        groups = self.get_cfg_asgs()
+        groups = self.get_cfg_target_asgs()
         data = self.input_data["application"].get("components", {})
         # print (self.input_data, file=sys.stderr)
         lst = []
