@@ -122,7 +122,7 @@ def read_config():
     try:
         d = d[CFG_SECTION]
         d["asg"] # access, to verify it exists
-        if len((d['asg'] or '').split(',')) > 1:
+        if len((d['asg'] if d['asg'] is not None else '').split(',')) > 1:
             assert d.get('control', {}).get('userdata', {}).get('deployment') is None, \
                 'Multiple target ASG\'s in Canary mode are not supported.'
     except KeyError:
@@ -356,7 +356,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
     progr.add(progress_weights["0qry"])
     if not insts:
         return
-    if cfg.get('control', {}).get('userdata', {}).get('deployment') and len(insts) >= 2:
+    if cfg.get('control', {}).get('userdata', {}).get('deployment') is not None and len(insts) >= 2:
         raise AdjustError("Cannot adjust multiple instances in a target ASG "
                           "in Canary mode. This use case is not supported at the moment.")
 
@@ -541,12 +541,12 @@ class A(adjust.Adjust):
 
     @staticmethod
     def get_cfg_target_asgs():
-        return sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('asg', '') or '').split(',')))))
+        return sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('asg', '') if cfg.get('asg') is not None else '').split(',')))))
 
     @staticmethod
     def get_cfg_ref_asgs():
-        v = cfg.get('control', {}).get('userdata', {}).get('deployment', '') or ''
-        return sorted(list(filter(str, map(lambda g: g.strip(), v.split(',')))))
+        v = cfg.get('control', {}).get('userdata', {}).get('deployment', '')
+        return sorted(list(filter(str, map(lambda g: g.strip(), (v if v is not None else '').split(',')))))
 
     def get_cfg_all_asgs(self):
         return (*self.get_cfg_target_asgs(), *self.get_cfg_ref_asgs())
@@ -610,7 +610,7 @@ class A(adjust.Adjust):
     def get_mon_inst_ids(self):
         ret = {}
         gnames = self.get_cfg_target_asgs()
-        ref_gnames = sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') or '').split(',')))))
+        ref_gnames = sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') if cfg.get('ref_asg') is not None else '').split(',')))))
         for name in gnames:
             insts, _ = get_asg_insts(name)
             insts = map(lambda i: i['InstanceId'], insts)
