@@ -4,7 +4,7 @@ import itertools
 import sys
 import os
 
-import time
+from time import time, sleep
 from threading import Timer
 
 import boto3
@@ -225,7 +225,7 @@ def wait_for_activities(aid, progr = None, timeout=ACTIVITY_TIMEOUT):
     wait_inc = 2
     while wait_time <= timeout:
 # valid 'StatusCode' values: 'PendingSpotBidPlacement'|'WaitingForSpotInstanceRequestId'|'WaitingForSpotInstanceId'|'WaitingForInstanceId'|'PreInService'|'InProgress'|'WaitingForELBConnectionDraining'|'MidLifecycleAction'|'WaitingForInstanceWarmup'|'Successful'|'Failed'|'Cancelled'
-        time.sleep(wait_inc)
+        sleep(wait_inc)
         wait_time += wait_inc
         # print("statuses:", repr( [a["StatusCode"] for a in asg.describe_scaling_activities(ActivityIds=aid)["Activities"]] ), file=sys.stderr) # DEBUG
         acts = asg.describe_scaling_activities(ActivityIds=aid)["Activities"]
@@ -240,7 +240,7 @@ def wait_for_inst_state(ilst, state, progr = None):
     wait_time = 0
     wait_inc = 2
     while True:
-        time.sleep(2)
+        sleep(2)
         wait_time += wait_inc
         a = ec2.describe_instances(InstanceIds = ilst)
 
@@ -411,7 +411,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                     raise
                 retry = True
             if retry:
-                time.sleep(1)
+                sleep(1)
                 ec2.start_instances(InstanceIds = ilst)
             progr.add(progress_weights["6start"] / nbatches)
 
@@ -553,7 +553,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def get_asg_activities(gname, period=3600):
-        now = time.time()
+        now = time()
         token = None
         while True:
             kwargs = {'AutoScalingGroupName': gname,
@@ -579,19 +579,19 @@ class A(adjust.Adjust):
                                    asg.describe_auto_scaling_groups(AutoScalingGroupNames=gnames)['AutoScalingGroups'])
             wait_time = max(biggest_cooldown + 5, 60)
         try:
-            start = time.time()
+            start = time()
             while True:
                 ids = self.get_scaling_act_ids(gnames)
                 if ids:
                     if progr:
                         progr.report('Waiting for {} activities to complete.'.format(len(ids)))
                     wait_for_activities(ids, timeout=600)
-                    start = time.time()
+                    start = time()
                 else:
-                    expired = (time.time() - start) > wait_time
+                    expired = (time() - start) > wait_time
                     if expired:
                         break
-                    time.sleep(5)
+                    sleep(5)
         except BOTO_EXCEPTIONS as e:
             raise Exception('Failed to wait for target and reference ASGs activities to complete. '
                             'Exception -> {}: {}'.format(e.__class__.__name__, str(e)))
@@ -653,7 +653,7 @@ class A(adjust.Adjust):
             raise AdjustError("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__,
                                                                                           str(e)))
         expired = False
-        start = time.time()
+        start = time()
         # Check-failure counters and checkboxes
         new_inst_ids = set()
         target_asg_restarted_once = False
@@ -698,12 +698,12 @@ class A(adjust.Adjust):
                     raise AdjustError("reference application has scaled during settlement period",
                                       status="transient-failure", reason="ref-app-scale")
             mon0, targetapp0 = mon, target_app
-            progr.set((time.time() - start) / period)
+            progr.set((time() - start) / period)
             progr.report('Settlement phase is in progress. Started {:.0f} seconds ago. {:.0f} seconds to go. '
-                         'Total is {:d} seconds.'.format((time.time() - start), max(0, period - (time.time() - start)),
+                         'Total is {:d} seconds.'.format((time() - start), max(0.0, period - (time() - start)),
                                                          period))
-            expired = (time.time() - start) >= period  # Update settlement period status (i.e. whether done or not)
-            time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
+            expired = (time() - start) >= period  # Update settlement period status (i.e. whether done or not)
+            sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
         if target_asg_restarted_once:
             raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
         return mon0
