@@ -109,8 +109,7 @@ def read_config():
 
     cfg_file = os.environ.get("OPTUNE_CONFIG", CFG_FILE )
     try:
-        f = open(cfg_file)
-        d = yaml.load(f)
+        d = yaml.load(open(cfg_file))
     except IOError as e:
         raise ConfigError("cannot read configuration from {}:{}".format(cfg_file,e.strerror))
     except yaml.error.YAMLError as e:
@@ -138,6 +137,10 @@ def get_group(name):
     return a["AutoScalingGroups"][0]
 
 
+def get_insts_from_resp(a):
+    return (yield from i["Instances"] for i in a["Reservations"])
+
+
 def get_asg_insts(gname):
     """get asg group description and a list of instance descriptions for all instances in the ASG. If there are instances that are in transition to InService or to Standby, this function will wait for the activity to complete before returning. This applies only to transitions that have a final state either InService or Standby. Instances that are leaving the group are not waited for are ignored (but the full list of instances is returned in all cases)."""
 
@@ -149,25 +152,19 @@ def get_asg_insts(gname):
         except AWS_EXCEPTIONS as e:
             raise ASGUnavailableException(original=e)
 
-        transitioning = False
-        for i in g["Instances"]:
-            if i["LifecycleState"] in ("Pending", "Pending:Wait", "Pending:Proceed", "EnteringStandby"):
-                transitioning = True
-                break
-
+        transitioning = any(i["LifecycleState"] in ("Pending", "Pending:Wait", "Pending:Proceed", "EnteringStandby")
+                            for i in g["Instances"])
         if not transitioning:
             break
 
         # wait for activities and re-query
-        acts=asg.describe_scaling_activities(AutoScalingGroupName=gname)
-        acts = acts['Activities']
+        acts = asg.describe_scaling_activities(AutoScalingGroupName=gname)['Activities']
         # get only un-completed activities
         acts = [a for a in acts if a["StatusCode"] not in ('Successful','Failed','Cancelled')]
         # DEBUG
-        print("waiting for ASG to complete activities (state={}, {} activities pending)".format(
-            repr([i["LifecycleState"] for i in g["Instances"]]),
-            len(acts)
-            ), file=sys.stderr)
+        print("waiting for ASG to complete activities (state={}, {} activities pending)"
+              "".format(repr([i["LifecycleState"] for i in g["Instances"]]), len(acts)),
+              file=sys.stderr)
         wait_for_activities ( [a["ActivityId"] for a in acts] )
     else:
         raise ASGActivityTimeOutError("ASG was found in transitional state and did not complete activities after {} sec".format(ACTIVITY_TIMEOUT * retries))
@@ -176,15 +173,11 @@ def get_asg_insts(gname):
     #        final = final and (a["StatusCode"] in ('Successful','Failed','Cancelled'))
 
     # get list of running instances
-    insts = []
     inst_ids = [ i["InstanceId"] for i in g["Instances"] ]
     if not inst_ids: # no running instances, return empty
-        return insts,g
+        return [],g
     a = ec2.describe_instances(InstanceIds = inst_ids)
-    for i in a["Reservations"]:
-        insts.extend(i["Instances"])
-
-    return insts,g
+    return get_insts_from_resp(a),g
 
 def q(gname):
     insts,g = get_asg_insts(gname)
@@ -214,22 +207,11 @@ def q(gname):
     if len(running_types) != 1:
         print("multiple instance types in asg {}: {}".format(gname, repr(running_types)),file=sys.stderr)
         return "(multiple)"
-    else: # len == 1
-        if lt_type != running_types[0]:
-            print("asg {}: instance type does {} not match running instances type {}".format(gname, lt_type, repr(running_types)),file=sys.stderr)
-            return running_types[0] # return actual running type, not one from ASG
+    elif lt_type != running_types[0]:  # len == 1
+        print("asg {}: instance type does {} not match running instances type {}".format(gname, lt_type, repr(running_types)),file=sys.stderr)
+        return running_types[0] # return actual running type, not one from ASG
 
     return lt_type
-
-def set_lt_inst_type():
-    """modify launch template linked to an asg to set a new instance type. This is done by adding a new
-    version to the LT."""
-    raise NotImplementedError
-
-def set_lc_inst_type():
-    """modify launch configuration linked to an asg to set a new instance type. This is done by creating an entirely new
-    launch configuration and setting it on the ASG (launch configs cannot be edited once created)"""
-    raise NotImplementedError
 
 
 def wait_for_activities(aid, progr = None, timeout=ACTIVITY_TIMEOUT):
@@ -243,17 +225,13 @@ def wait_for_activities(aid, progr = None, timeout=ACTIVITY_TIMEOUT):
 # valid 'StatusCode' values: 'PendingSpotBidPlacement'|'WaitingForSpotInstanceRequestId'|'WaitingForSpotInstanceId'|'WaitingForInstanceId'|'PreInService'|'InProgress'|'WaitingForELBConnectionDraining'|'MidLifecycleAction'|'WaitingForInstanceWarmup'|'Successful'|'Failed'|'Cancelled'
         time.sleep(wait_inc)
         wait_time += wait_inc
-        final = True
-        r = asg.describe_scaling_activities(ActivityIds=aid)
-        # print("statuses:", repr( [a["StatusCode"] for a in r["Activities"]] ), file=sys.stderr) # DEBUG
-        for a in r["Activities"]:
-            final = final and (a["StatusCode"] in ('Successful','Failed','Cancelled'))
-        if final:
+        # print("statuses:", repr( [a["StatusCode"] for a in asg.describe_scaling_activities(ActivityIds=aid)["Activities"]] ), file=sys.stderr) # DEBUG
+        acts = asg.describe_scaling_activities(ActivityIds=aid)["Activities"]
+        if any(a["StatusCode"] not in ("Successful", "Failed", "Cancelled") for a in acts):
             return
         if progr:
             progr.set(float(wait_time) / timeout)
-    else:
-        raise ASGActivityTimeOutError("wait for asg activity timed out")
+    raise ASGActivityTimeOutError("wait for asg activity timed out")
 
 
 def wait_for_inst_state(ilst, state, progr = None):
@@ -264,15 +242,11 @@ def wait_for_inst_state(ilst, state, progr = None):
         wait_time += wait_inc
         a = ec2.describe_instances(InstanceIds = ilst)
 
-        insts = []
-        for i in a["Reservations"]:
-            insts.extend(i["Instances"])
-
-        if all( (i["State"]["Name"] == state for i in insts) ):
+        if all( (i["State"]["Name"] == state for i in get_insts_from_resp(a)) ):
             return
 
         # if there are instances in 'terminated' state, they won't exit that state: abort the wait
-        if any( (i["State"]["Name"] == "terminated" for i in insts) ):
+        if any( (i["State"]["Name"] == "terminated" for i in get_insts_from_resp(a)) ):
             raise EC2Error("instance(s) unexpectedly terminated")
 
         if wait_time > INST_STATE_TIMEOUT:
@@ -301,9 +275,8 @@ class Progress(object):
             self.timer.cancel()
 
     def print_progress(self):
-        d = {"progress": int(round(self.p * 100.0))}
-        if self.last_msg:
-            d["message"] = self.last_msg
+        d = {"progress": int(round(self.p * 100.0)),
+             **({"message": self.last_msg} if self.last_msg is not None else {})}
         print(json_enc(d))
         self.start_timer()
 
@@ -381,19 +354,16 @@ def set_running_inst_type(gname, itype, progr, batch=1):
     progr.add(progress_weights["0qry"])
     if not insts:
         return
-    if cfg.get('control', {}).get('userdata', {}).get('deployment'):
-        if len(insts) >= 2:
-            raise AdjustError("Cannot adjust multiple instances in a target ASG "
-                              "in Canary mode. This use case is not supported at the moment.")
+    if cfg.get('control', {}).get('userdata', {}).get('deployment') and len(insts) >= 2:
+        raise AdjustError("Cannot adjust multiple instances in a target ASG "
+                          "in Canary mode. This use case is not supported at the moment.")
 
     asg_insts = { i['InstanceId'] : i for i in g["Instances"] } # here we have the ASG lifecycle status, keyed by inst. ID
 
-    nbatches = (len(insts) + batch - 1) // batch
-    nbatches = float(nbatches) # we'll use this in fp math, convert it now for convenience
+    nbatches = float((len(insts) + batch - 1) // batch)  # we'll use this in fp math, convert it now for convenience
 
     while insts:
-        b = insts[:batch]
-        insts = insts[batch:]
+        b, insts = insts[:batch], insts[batch:]
 
         # skip instances that are already the correct type or are transitioning out of the ASG permanently
         ilst = [ i["InstanceId"] for i in b if i["InstanceType"] != itype and (asg_insts[i["InstanceId"]]['LifecycleState'] not in ASG_FINAL_STATES) ]
@@ -432,11 +402,10 @@ def set_running_inst_type(gname, itype, progr, batch=1):
             try:
                 ec2.start_instances(InstanceIds = ilst)
             except BOTO_EXCEPTIONS as x:
-                c = getattr(x,"response",{}).get("Error",{}).get("Code","")
                 # we MAY get an error that is transient, something like:
                 #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
                 # retry once, if the error code indicates this might be the case
-                if c != "InvalidParameterValue":
+                if getattr(x, "response", {}).get("Error", {}).get("Code", "") != "InvalidParameterValue":
                     raise
                 retry = True
             if retry:
@@ -452,7 +421,6 @@ def set_running_inst_type(gname, itype, progr, batch=1):
         finally:
             start_err = None
             if not restarted: # an error occurred, attempt to start them (again, if needed), ignoring all errors
-                rs = 0
                 try:
                     ec2.start_instances(InstanceIds = ilst)
                     with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
@@ -462,10 +430,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 # re-query the state and warn if that fails or not everything is 'running'
                 try:
                     a = ec2.describe_instances(InstanceIds = ilst)
-                    tmp_insts = []
-                    for i in a["Reservations"]:
-                        tmp_insts.extend(i["Instances"])
-                    if not all( (i["State"]["Name"] == "running" for i in tmp_insts) ):
+                    if not all( (i["State"]["Name"] == "running" for i in get_insts_from_resp(a)) ):
                         start_err = AdjustError("failed to start instances {}; "
                                                 "an error occurred during instance type update and some instances "
                                                 "could not be restarted. They will be returned to InService state anyway, "
@@ -492,8 +457,6 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 raise AdjustError("failed to put instances {} back in service; exception: {}; {}"
                                   "".format(ilst_stdby, str(e), postfix).strip(),
                                   status="rejected", reason="scheduling-failed")
-            except AdjustError:
-                raise
             except Exception as e:
                 postfix = "previously encountered: {}".format(str(start_err)) if start_err else ""
                 raise Exception("{}; {}".format(str(e), postfix))
@@ -501,18 +464,13 @@ def set_running_inst_type(gname, itype, progr, batch=1):
 
 class App:
     def __init__(self, group_names):
-        self.groups = []
-        for gname in group_names:
-            self.groups.append(Group(gname))
+        self.groups = tuple(Group(gname) for gname in group_names)
 
     def version_id(self):
         return get_hash(set(map(lambda group: group.version_id(), self.groups)))
 
     def version_ids_set(self):
-        ret = set()
-        for group in self.groups:
-            ret.update(group.version_ids_set())
-        return ret
+        return set(itertools.chain(*(group.version_ids_set() for group in self.groups)))
 
     def spec_id(self):
         return get_hash(set(map(lambda group: group.spec_id(), self.groups)))
@@ -524,10 +482,7 @@ class App:
         return sum(group.runtime_count() for group in self.groups)
 
     def instance_ids(self):
-        ids = set()
-        for group in self.groups:
-            ids.update(group.instance_ids())
-        return ids
+        return set(itertools.chain(*(group.instance_ids() for group in self.groups)))
 
     def new_instances(self, prevapp):
         return self.instance_ids() - prevapp.instance_ids()
@@ -539,8 +494,7 @@ class App:
 class Group:
     def __init__(self, gname):
         assert gname
-        insts, group = get_asg_insts(gname)
-        self.desc = group
+        insts, self.desc = get_asg_insts(gname)
         self.instances = [Instance(desc=inst) for inst in insts]
 
     def instance_ids(self):
@@ -585,8 +539,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def get_cfg_target_asgs():
-        v = cfg.get('asg', '') or ''
-        return sorted(list(filter(str, map(lambda g: g.strip(), v.split(',')))))
+        return sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('asg', '') or '').split(',')))))
 
     @staticmethod
     def get_cfg_ref_asgs():
@@ -601,14 +554,12 @@ class A(adjust.Adjust):
         now = time.time()
         token = None
         while True:
-            kwargs = {'AutoScalingGroupName': gname}
-            if token:
-                kwargs['NextToken'] = token
+            kwargs = {'AutoScalingGroupName': gname,
+                      **({'NextToken': token} if token is not None else {})}
             resp = asg.describe_scaling_activities(**kwargs)
             token = resp.get('NextToken')
-            activities = resp['Activities']
-            if activities:
-                for activity in activities:
+            if resp.get('Activities'):
+                for activity in resp['Activities']:
                     if (now - activity['StartTime'].timestamp()) <= period:
                         yield activity
                         continue
@@ -616,10 +567,9 @@ class A(adjust.Adjust):
             break
 
     def get_scaling_act_ids(self, gnames):
-        ids = list(itertools.chain(*((a["ActivityId"] for a in self.get_asg_activities(gname)
-                                      if a["StatusCode"] not in ("Successful", "Failed", "Cancelled"))
-                                     for gname in gnames)))
-        return ids
+        return list(itertools.chain(*((a["ActivityId"] for a in self.get_asg_activities(gname)
+                                       if a["StatusCode"] not in ("Successful", "Failed", "Cancelled"))
+                                      for gname in gnames)))
 
     def wait_for_scaling_activities(self, gnames, progr=None, wait_time=None):
         if wait_time is None:
@@ -644,18 +594,15 @@ class A(adjust.Adjust):
             raise Exception('Failed to wait for target and reference ASGs activities to complete. '
                             'Exception -> {}: {}'.format(e.__class__.__name__, str(e)))
         except ASGActivityTimeOutError:
-            ids = self.get_scaling_act_ids(gnames)
             raise ASGActivityTimeOutError('Timed out waiting for incomplete activities to resolve. '
                                           'Activity ids that were still in progress: {}'
-                                          ''.format(ids))
+                                          ''.format(self.get_scaling_act_ids(gnames)))
 
     def scale_to_one_if_needed(self, gname):
         on_fail = cfg.get('control', {}).get('on_fail', 'keep')
-        if on_fail == 'destroy':
-            group = get_group(gname)
-            if group['DesiredCapacity'] == 0:
-                asg.update_auto_scaling_group(AutoScalingGroupName=gname, DesiredCapacity=1)
-                return True
+        if on_fail == 'destroy' and get_group(gname)['DesiredCapacity'] == 0:
+            asg.update_auto_scaling_group(AutoScalingGroupName=gname, DesiredCapacity=1)
+            return True
         return False
 
     def get_mon_inst_ids(self):
@@ -675,25 +622,20 @@ class A(adjust.Adjust):
         return ret
 
     def monitor(self):
-        target_asgs = self.get_cfg_target_asgs()
-        target_app = App(target_asgs)
-        ref_asgs = self.get_cfg_ref_asgs()
+        target_app = App(self.get_cfg_target_asgs())
         try:
-            ref_app = App(ref_asgs) if ref_asgs else None
+            ref_app = App(self.get_cfg_ref_asgs()) if self.get_cfg_ref_asgs() else None
         except ASGUnavailableException as e:
             raise RefASGUnavailableException(original=e.original)
         ret = {
             'spec_id': target_app.spec_id(),
             'runtime_id': target_app.runtime_id(),
             'version_id': target_app.version_id(),
-        }
-        if ref_app:
-            ret.update({
-                'ref_spec_id': ref_app.spec_id(),
+            **({'ref_spec_id': ref_app.spec_id(),
                 'ref_runtime_id': ref_app.runtime_id(),
                 'ref_runtime_count': ref_app.runtime_count(),
-                'ref_version_id': ref_app.version_id(),
-            })
+                'ref_version_id': ref_app.version_id()} if ref_app else {})
+        }
         return ret, target_app, ref_app
 
     def settle(self, progr, period=SETTLE_TIME):
@@ -708,7 +650,6 @@ class A(adjust.Adjust):
         except Exception as e:
             raise AdjustError("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__,
                                                                                           str(e)))
-        mon = mon0
         expired = False
         start = time.time()
         # Check-failure counters and checkboxes
@@ -733,10 +674,9 @@ class A(adjust.Adjust):
             new_inst_ids.update(targetapp.new_instances(targetapp0))
             if new_inst_ids:
                 target_asg_restarted_once = True
-                gone = targetapp.gone_instances(new_inst_ids)
-                if gone:
-                    raise AdjustError('some of the target asg {} instances have restarted twice or more '
-                                      'during settlement period; most likely fail-restart cycle'
+                if targetapp.gone_instances(new_inst_ids):
+                    raise AdjustError('some of the target asg {} instances have been re-spawned twice or more '
+                                      'during settlement period; it is most likely a fail-restart cycle'
                                       ''.format(self.get_cfg_target_asgs()), status="rejected", reason="unstable")
             if refapp:
                 if len(refapp.version_ids_set()) > 1:
@@ -755,8 +695,7 @@ class A(adjust.Adjust):
                     self.wait_for_scaling_activities(all_asgs, progr=progr)
                     raise AdjustError("reference application has scaled during settlement period",
                                       status="transient-failure", reason="ref-app-scale")
-            mon0 = mon
-            targetapp0 = targetapp
+            mon0, targetapp0 = mon, target_app
             progr.set((time.time() - start) / period)
             progr.report('Settlement phase is in progress. Started {:.0f} seconds ago. {:.0f} seconds to go. '
                          'Total is {:d} seconds.'.format((time.time() - start), max(0, period - (time.time() - start)),
@@ -765,32 +704,22 @@ class A(adjust.Adjust):
             time.sleep(SETTLE_CHECK_TIME)  # Sleep before checking again
         if target_asg_restarted_once:
             raise AdjustError("target asg restart detected", status="transient-failure", reason="app-restart")
-        return mon
+        return mon0
 
     def query(self):
         try:
             m, _, _ = self.monitor()
         except Exception as e:
             raise Exception("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__, str(e)))
-        if cfg.get('ref_asg'):
-            m.update(self.get_mon_inst_ids())
-        comps = {}
-        desc = { "application": {"components" : comps}, "monitoring": m }
-        for gname in self.get_cfg_target_asgs():
-            t = q(gname)
-            comps[gname] = { "settings" : { "inst_type" : { "value" : t, "type" : "enum", "values" : list(INST_TYPES), "unit" : "ec2" } } }
-        return desc
+        m = {**m, **self.get_mon_inst_ids()} if cfg.get('ref_asg') is not None else m
+        gc = lambda v: dict(settings=dict(inst_type=dict(value=v, type="enum", values=list(INST_TYPES), unit="ec2")))
+        comps = {gname: gc(q(gname)) for gname in self.get_cfg_target_asgs()}
+        return {"application": {"components": comps}, "monitoring": m}
 
     def adjust(self, data=None):
-        groups = self.get_cfg_target_asgs()
         data = self.input_data["application"].get("components", {}).copy()
         # print (self.input_data, file=sys.stderr)
-        lst = []
-        for g in groups:
-            c = data.pop(g, None)
-            if not c:
-                continue # no settings for this grp
-            lst.append( (g, c) )
+        lst = [(g, data.pop(g)) for g in self.get_cfg_target_asgs() if data.get(g)]
         # check for components not in 'groups'
         if data:
             # return  {"status":"failed", "message":}
@@ -801,25 +730,20 @@ class A(adjust.Adjust):
         progr.start_timer()
         try:
             grp_weight = 0.9/float(len(lst)) # empty settings counted as well (cosmetic, will cause uneven progress advance, FIXME)
-            n = 0
-            for g,v in lst:
+            for n,(g,v) in enumerate(lst):
                 progr.set(grp_weight * float(n))
-                n = n+1
                 if "settings" not in v: continue
                 t = v["settings"].get("inst_type", None)
                 if not t:
                     continue # not set
                 with progr.stage(grp_weight) as p_stage:
                     try:
-                        scaled = self.scale_to_one_if_needed(g)
-                        if scaled:
+                        if self.scale_to_one_if_needed(g):
                             self.wait_for_scaling_activities([g], wait_time=60)
                         set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
                     except AWS_EXCEPTIONS as e:
                         raise AdjustError('failed to adjust instances of target asg "{}"; exception: {}'.format(g, str(e)),
                                           status="failed", reason="adjust-failed")
-                    except AdjustError:
-                        raise
 
             with progr.stage(0.1) as p_stage:
                 mon = self.settle(p_stage, self.input_data.get('control', {}).get('settlement', SETTLE_TIME))
@@ -830,11 +754,7 @@ class A(adjust.Adjust):
 if __name__ == "__main__":
     # config section 'ec2asg'
     # servo-ec2asg
-    try:
-        cfg = read_config()
-        # TODO (probably best to add to base class: check for required settings)
-        i = A("1", "(todo - help text)", False)
-    except Exception as x:
-        raise # FIXME
-
+    cfg = read_config()
+    # TODO (probably best to add to base class: check for required settings)
+    i = A("1", "(todo - help text)", False)
     i.run()
