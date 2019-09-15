@@ -783,7 +783,7 @@ class A(adjust.Adjust):
 
     def adjust(self, data=None):
         groups = self.get_cfg_target_asgs()
-        data = self.input_data["application"].get("components", {})
+        data = self.input_data["application"].get("components", {}).copy()
         # print (self.input_data, file=sys.stderr)
         lst = []
         for g in groups:
