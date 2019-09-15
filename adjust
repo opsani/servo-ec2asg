@@ -553,7 +553,7 @@ class A(adjust.Adjust):
 
     @staticmethod
     def get_asg_activities(gname, period=3600):
-        now = time()
+        start = time()
         token = None
         while True:
             kwargs = {'AutoScalingGroupName': gname,
@@ -562,7 +562,7 @@ class A(adjust.Adjust):
             token = resp.get('NextToken')
             if resp.get('Activities'):
                 for activity in resp['Activities']:
-                    if (now - activity['StartTime'].timestamp()) <= period:
+                    if (start - activity['StartTime'].timestamp()) <= period:
                         yield activity
                         continue
                     break
@@ -643,7 +643,7 @@ class A(adjust.Adjust):
     def settle(self, progr, period=SETTLE_TIME):
         all_asgs = self.get_cfg_all_asgs()
         try:
-            mon0, targetapp0, _ = self.monitor()
+            mon0, target_app0, _ = self.monitor()
         except RefASGUnavailableException as e:
             self.wait_for_scaling_activities(all_asgs, progr=progr)
             raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
@@ -661,7 +661,7 @@ class A(adjust.Adjust):
         while not expired:
             try:
                 # Get fresh env state for monitoring checks
-                mon, targetapp, refapp = self.monitor()
+                mon, target_app, ref_app = self.monitor()
             except RefASGUnavailableException as e:
                 raise AdjustError("unable to query reference asg(s) for monitoring during settlement period; "
                                   "exception: {}".format(str(e.original)),
@@ -673,15 +673,15 @@ class A(adjust.Adjust):
                 self.wait_for_scaling_activities(all_asgs, progr=progr)
                 raise AdjustError("target asg configuration was modified unexpectedly",
                                   status="transient-failure", reason="app-update")
-            new_inst_ids.update(targetapp.new_instances(targetapp0))
+            new_inst_ids.update(target_app.new_instances(target_app0))
             if new_inst_ids:
                 target_asg_restarted_once = True
-                if targetapp.gone_instances(new_inst_ids):
+                if target_app.gone_instances(new_inst_ids):
                     raise AdjustError('some of the target asg {} instances have been re-spawned twice or more '
                                       'during settlement period; it is most likely a fail-restart cycle'
                                       ''.format(self.get_cfg_target_asgs()), status="rejected", reason="unstable")
-            if refapp:
-                if len(refapp.version_ids_set()) > 1:
+            if ref_app:
+                if len(ref_app.version_ids_set()) > 1:
                     self.wait_for_scaling_activities(all_asgs, progr=progr)
                     raise AdjustError("reference application software version is not consistent among its replicas",
                                       status="aborted", reason="ref-app-inconsistent")
@@ -697,7 +697,7 @@ class A(adjust.Adjust):
                     self.wait_for_scaling_activities(all_asgs, progr=progr)
                     raise AdjustError("reference application has scaled during settlement period",
                                       status="transient-failure", reason="ref-app-scale")
-            mon0, targetapp0 = mon, target_app
+            mon0, target_app0 = mon, target_app
             progr.set((time() - start) / period)
             progr.report('Settlement phase is in progress. Started {:.0f} seconds ago. {:.0f} seconds to go. '
                          'Total is {:d} seconds.'.format((time() - start), max(0.0, period - (time() - start)),
@@ -719,11 +719,11 @@ class A(adjust.Adjust):
         return {"application": {"components": comps}, "monitoring": m}
 
     def adjust(self, data=None):
-        data = self.input_data["application"].get("components", {}).copy()
+        comps = self.input_data["application"].get("components", {}).copy()
         # print (self.input_data, file=sys.stderr)
-        lst = [(g, data.pop(g)) for g in self.get_cfg_target_asgs() if data.get(g)]
+        lst = [(g, comps.pop(g)) for g in self.get_cfg_target_asgs() if comps.get(g)]
         # check for components not in 'groups'
-        if data:
+        if comps:
             # return  {"status":"failed", "message":}
             # FIXME: base class should support custom exceptions and/or allow returning data from adjust()
             raise Exception("input data contains unknown components: "+ repr(list(data.keys())))
