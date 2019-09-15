@@ -640,13 +640,17 @@ class A(adjust.Adjust):
         }
         return ret, target_app, ref_app
 
-    def remediate(self, progr):
+    def remediate(self, types_per_group, progr):
         asgs = self.get_cfg_target_asgs()
         on_fail = cfg.get('control', {}).get('on_fail', 'keep')
         try:
             if on_fail == 'destroy':
                 for g in asgs:
                     asg.update_auto_scaling_group(AutoScalingGroupName=g, DesiredCapacity=0, MinSize=0)
+            if on_fail == 'rollback':
+                for gname in asgs:
+                    itype = types_per_group[gname]
+                    set_running_inst_type(gname, itype, progr)
         except Exception as e:
             raise Exception('Failed to remediate adjust failure for groups {}. '
                             'Exception -> {}: {}'.format(asg, e.__class__.__name__, str(e)))
@@ -743,6 +747,7 @@ class A(adjust.Adjust):
             # FIXME: base class should support custom exceptions and/or allow returning data from adjust()
             raise Exception("input data contains unknown components: "+ repr(list(data.keys())))
         # FIXME: correct behavior on 'extra' data (e.g. unknown comps or unknown settings) - ignore or fail?
+        init_first_inst_types_per_group = {}
         progr = Progress()
         progr.start_timer()
         try:
@@ -757,6 +762,9 @@ class A(adjust.Adjust):
                     try:
                         if self.scale_to_one_if_needed(g):
                             self.wait_for_scaling_activities([g], wait_time=60)
+                        init_first_inst_types_per_group[g] = next(get_insts_from_resp(
+                            ec2.describe_instances(InstanceIds=[get_group(g)["Instances"][0]["InstanceId"]])))[
+                            "InstanceType"]
                         set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
                     except AWS_EXCEPTIONS as e:
                         raise AdjustError('failed to adjust instances of target asg "{}"; exception: {}'.format(g, str(e)),
@@ -767,7 +775,7 @@ class A(adjust.Adjust):
         except AdjustError as e:
             if any((e.status == "rejected",
                     e.reason in ("adjust-failed", "start-failed"))):
-                self.remediate(progr)
+                self.remediate(init_first_inst_types_per_group, progr)
             raise
         finally:
             progr.stop_timer()
