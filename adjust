@@ -601,7 +601,7 @@ class A(adjust.Adjust):
                                           ''.format(self.get_scaling_act_ids(gnames)))
 
     def scale_to_one_if_needed(self, gname):
-        on_fail = cfg.get('control', {}).get('on_fail', 'keep')
+        on_fail = cfg.get('control', {}).get('on_fail')
         if on_fail == 'destroy' and get_group(gname)['DesiredCapacity'] == 0:
             asg.update_auto_scaling_group(AutoScalingGroupName=gname, DesiredCapacity=1)
             return True
@@ -639,6 +639,21 @@ class A(adjust.Adjust):
                 'ref_version_id': ref_app.version_id()} if ref_app else {})
         }
         return ret, target_app, ref_app
+
+    def remediate(self, progr):
+        asgs = self.get_cfg_target_asgs()
+        on_fail = cfg.get('control', {}).get('on_fail', 'keep')
+        try:
+            if on_fail == 'destroy':
+                for g in asgs:
+                    asg.update_auto_scaling_group(AutoScalingGroupName=g, DesiredCapacity=0, MinSize=0)
+        except Exception as e:
+            raise Exception('Failed to remediate adjust failure for groups {}. '
+                            'Exception -> {}: {}'.format(asg, e.__class__.__name__, str(e)))
+        try:
+            self.wait_for_scaling_activities(asgs, progr=progr)
+        except Exception:
+            pass
 
     def settle(self, progr, period=SETTLE_TIME):
         all_asgs = self.get_cfg_all_asgs()
@@ -749,6 +764,11 @@ class A(adjust.Adjust):
 
             with progr.stage(0.1) as p_stage:
                 mon = self.settle(p_stage, self.input_data.get('control', {}).get('settlement', SETTLE_TIME))
+        except AdjustError as e:
+            if any((e.status == "rejected",
+                    e.reason in ("adjust-failed", "start-failed"))):
+                self.remediate(progr)
+            raise
         finally:
             progr.stop_timer()
         return {"status":"ok", "monitoring": mon}
