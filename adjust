@@ -13,9 +13,11 @@ json_enc = json.JSONEncoder(separators=(",",":")).encode
 
 import adjust
 
+DEBUG = False
+
 # FIXME: configurable wait times?
 # NOTE: activity timeout may need to be set depending on the health check settings for any ELB/ALB, because aws might not put the instance into service until it passes the checks a few times in a row.
-ACTIVITY_TIMEOUT = 60
+ACTIVITY_TIMEOUT = 120
 INST_STATE_TIMEOUT = 120
 
 sess = boto3.session.Session() # todo: add config, e.g. region_name = ?, etc.
@@ -271,32 +273,58 @@ progress_weights = { k:v/s for k,v in progress_weights.items() }
 
 ASG_FINAL_STATES = ("Detaching", "Detached", "Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")
 
-def set_running_inst_type(gname, itype, progr, batch=1):
+def set_running_inst_type(gname, itype, progr, batch=1, old_itypes=None, rollback_itypes=None):
     """update running instances in an ASG to have a new instance type without destroying them. This is faster
     than pulling them out of the ASG and waiting for brand new ones to be created. If the ASG is empty (0 running
     instances), this function does nothing.
     Maximum 'batch' instances are stopped and removed from the ASG at the same time.
     batch cannot be more than 20.
+
+    old_itypes (if given) should be a dict. It is is updated with a inst_id->type map reflecting all successful changes that were made.
+
+    if rollback_itypes is set, run in 'recovery mode': itype is ignored, rollback_itypes is interpreted as a map from instance id to inst type, attempt to set the type only of instances found in the map, leave everything else alone. The batch rollback is disabled. (this mode is used to roll back batches that were successful)
     """
+
+    if old_itypes is None:
+        old_itypes = {} # caller doesn't want the map, gather into a local dict that will be dropped on exit
+
+    recovery_mode = bool(rollback_itypes) # if in recovery mode, disable current batch rollback
 
     insts,g = get_asg_insts(gname) # this will wait for any outstanding Standby<->InService transitions, returning only when all are idle or leaving the group
     progr.add(progress_weights["0qry"])
     if not insts:
         return
 
+    # insts.reverse() enable for debugging of ordering issues
+
     asg_insts = { i['InstanceId'] : i for i in g["Instances"] } # here we have the ASG lifecycle status, keyed by inst. ID
 
     nbatches = (len(insts) + batch - 1) // batch
     nbatches = float(nbatches) # we'll use this in fp math, convert it now for convenience
 
+    if rollback_itypes:
+        # trim inst list to what's present in the rollback map, if the map is present
+        insts = list(filter(lambda x: x["InstanceId"] in rollback_itypes, insts))
+        itypes = rollback_itypes
+        if DEBUG:
+            print("###", "rb mode, map:", repr(itypes), file=sys.stderr)
+    else:
+        itypes = {}
+        if DEBUG:
+            print("###", "normal mode, tgt itype:", itype, file=sys.stderr)
+
     while insts:
         b = insts[:batch]
         insts = insts[batch:]
+        if DEBUG:
+            print("###", "batch:", [i["InstanceId"] for i in b], file=sys.stderr)
 
         # skip instances that are already the correct type or are transitioning out of the ASG permanently
-        ilst = [ i["InstanceId"] for i in b if i["InstanceType"] != itype and (asg_insts[i["InstanceId"]]['LifecycleState'] not in ASG_FINAL_STATES) ]
+        ilst = [ (i["InstanceId"], i["InstanceType"]) for i in b if i["InstanceType"] != itypes.get(i["InstanceId"], itype) and (asg_insts[i["InstanceId"]]['LifecycleState'] not in ASG_FINAL_STATES) ]
         if not ilst:
             continue
+        revert_map_batch = dict(ilst)
+        ilst = list(revert_map_batch.keys())
 
         # filter only InService instances, these need to be put into Standby
         ilst_inservice = [ i for i in ilst if asg_insts[i]['LifecycleState'] == "InService" ]
@@ -321,7 +349,7 @@ def set_running_inst_type(gname, itype, progr, batch=1):
 
             # modify instance type
             for i in ilst:
-                ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itype } )
+                ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : itypes.get(i, itype) } )
 
             progr.add(progress_weights["5mod"] / nbatches)
 
@@ -334,21 +362,45 @@ def set_running_inst_type(gname, itype, progr, batch=1):
                 # we MAY get an error that is transient, something like:
                 #   Invalid value 't2.nano' for instanceType. LaunchPlan instance type does not match attribute value t2.micro
                 # retry once, if the error code indicates this might be the case
+                if DEBUG:
+                    print("###", "start failed, err:", c, file=sys.stderr)
                 if c != "InvalidParameterValue":
                     raise
                 retry = True
             if retry:
                 time.sleep(1)
-                ec2.start_instances(InstanceIds = ilst)
+                try:
+                    ec2.start_instances(InstanceIds = ilst)
+                except  botocore.exceptions.ClientError as x:
+                    c = getattr(x,"response",{}).get("Error",{}).get("Code","")
+                    if DEBUG:
+                        print("###", "start failed (try2), err:", c, file=sys.stderr)
+                    raise
             progr.add(progress_weights["6start"] / nbatches)
 
             with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
                 wait_for_inst_state(ilst, "running", ps)
             restarted = True
+            old_itypes.update(revert_map_batch)
 
         finally:
-            if not restarted: # an error occurred, attempt to start them (again, if needed), ignoring all errors
-                rs = 0
+            if not restarted: # an error occurred, attempt to restore old instance type and start them again
+                if not recovery_mode:
+                    if DEBUG:
+                        print("###", "rolling back batch, itype map:", repr(revert_map_batch), file=sys.stderr)
+                    try:
+                        ec2.stop_instances(InstanceIds = ilst)
+                        # weight=0: progress will stall here (might be good to move it backwards, but not important - we're about to fail anyway)
+                        with progr.stage(0.0) as ps:
+                            wait_for_inst_state(ilst, "stopped", ps)
+
+                        for i in ilst:
+                            ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : revert_map_batch[i] } )
+                    except Exception:
+                        # FIXME log warning on failures here
+                        pass
+
+                # rs = 0
                 try:
                     ec2.start_instances(InstanceIds = ilst)
                     with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
@@ -371,7 +423,8 @@ def set_running_inst_type(gname, itype, progr, batch=1):
             progr.add(progress_weights["8svc"] / nbatches)
             with progr.stage(progress_weights["9wsvc"] / nbatches) as ps:
                 wait_for_activities([a["ActivityId"] for a in r["Activities"]], ps)
-            return
+
+    return
 
 
 class A(adjust.Adjust):
@@ -412,7 +465,18 @@ class A(adjust.Adjust):
             if not t:
                 continue # not set
             with progr.stage(grp_weight) as p_stage:
-                set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
+                old_itypes = {}
+                try:
+                    set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1), old_itypes=old_itypes) # TODO: check t["value"] exists
+                except botocore.exceptions.ClientError: # rollback only on boto exceptions
+                    if old_itypes:
+                        if DEBUG:
+                            print("###", "rolling back completed batches:", repr(old_itypes), file=sys.stderr)
+                        try:
+                            set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1), rollback_itypes=old_itypes)
+                        except Exception as x: # ignore all failures
+                            print("WARNING: rollback failure:", str(x), file=sys.stderr)
+                    raise # re-raise to trigger err response to client
 
         return # {"status":"ok"}
 
