@@ -457,6 +457,7 @@ class A(adjust.Adjust):
         progr = Progress()
         grp_weight = 1.0/float(len(lst)) # empty settings counted as well (cosmetic, will cause uneven progress advance, FIXME)
         n = 0
+        updated_cnt = 0
         for g,v in lst:
             progr.set(grp_weight * float(n))
             n = n+1
@@ -476,7 +477,10 @@ class A(adjust.Adjust):
                             set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1), rollback_itypes=old_itypes)
                         except Exception as x: # ignore all failures
                             print("WARNING: rollback failure:", str(x), file=sys.stderr)
+                    if updated_cnt: # other components were updated (and aren't rolled back), warn of possible inconsistent state (remote side *should* in all cases assume that app may be changed even though a failure is reported and must not rely on remembered last state)
+                        print("WARNING: component {} rolled back after failed inst_type change, but other components may have been updated and will not be rolled back.".format(g), file=sys.stderr)
                     raise # re-raise to trigger err response to client
+            updated_cnt += 1
 
         return # {"status":"ok"}
 
