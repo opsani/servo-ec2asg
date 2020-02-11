@@ -44,7 +44,7 @@ def read_config():
     cfg_file = os.environ.get("OPTUNE_CONFIG", CFG_FILE )
     try:
         f = open(cfg_file)
-        d = yaml.load(f)
+        d = yaml.safe_load(f)
     except IOError as e:
         raise ConfigError("cannot read configuration from {}:{}".format(cfg_file,e.strerror))
     except yaml.error.YAMLError as e:
@@ -273,7 +273,7 @@ progress_weights = { k:v/s for k,v in progress_weights.items() }
 
 ASG_FINAL_STATES = ("Detaching", "Detached", "Terminating", "Terminating:Wait", "Terminating:Proceed", "Terminated")
 
-def set_running_inst_type(gname, itype, progr, batch=1, old_itypes=None, rollback_itypes=None):
+def set_running_inst_type(gname, itype, progr, err_cb, batch=1, old_itypes=None, rollback_itypes=None):
     """update running instances in an ASG to have a new instance type without destroying them. This is faster
     than pulling them out of the ASG and waiting for brand new ones to be created. If the ASG is empty (0 running
     instances), this function does nothing.
@@ -396,17 +396,16 @@ def set_running_inst_type(gname, itype, progr, batch=1, old_itypes=None, rollbac
 
                         for i in ilst:
                             ec2.modify_instance_attribute(InstanceId = i, InstanceType = { "Value" : revert_map_batch[i] } )
-                    except Exception:
-                        # FIXME log warning on failures here
-                        pass
+                    except Exception as e:
+                        err_cb(e.__class__.__name__, "error occurred while stopping ec2 instances", str(e))
 
                 # rs = 0
                 try:
                     ec2.start_instances(InstanceIds = ilst)
                     with progr.stage(progress_weights["7wstart"] / nbatches) as ps:
                         wait_for_inst_state(ilst, "running", ps)
-                except Exception:
-                    pass
+                except Exception as e:
+                    err_cb(e.__class__.__name__, "error occurred while starting stopped ec2 instances", str(e))
                 # re-query the state and warn if that fails or not everything is 'running'
                 try:
                     a = ec2.describe_instances(InstanceIds = ilst)
@@ -468,13 +467,13 @@ class A(adjust.Adjust):
             with progr.stage(grp_weight) as p_stage:
                 old_itypes = {}
                 try:
-                    set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1), old_itypes=old_itypes) # TODO: check t["value"] exists
+                    set_running_inst_type(g, t["value"], p_stage, self.print_json_error, batch = cfg.get("batch_size", 1), old_itypes=old_itypes) # TODO: check t["value"] exists
                 except botocore.exceptions.ClientError: # rollback only on boto exceptions
                     if old_itypes:
                         if DEBUG:
                             print("###", "rolling back completed batches:", repr(old_itypes), file=sys.stderr)
                         try:
-                            set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1), rollback_itypes=old_itypes)
+                            set_running_inst_type(g, t["value"], p_stage, self.print_json_error, batch = cfg.get("batch_size", 1), rollback_itypes=old_itypes)
                         except Exception as x: # ignore all failures
                             print("WARNING: rollback failure:", str(x), file=sys.stderr)
                     if updated_cnt: # other components were updated (and aren't rolled back), warn of possible inconsistent state (remote side *should* in all cases assume that app may be changed even though a failure is reported and must not rely on remembered last state)
