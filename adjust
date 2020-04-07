@@ -392,8 +392,8 @@ class A(adjust.Adjust):
                 for gname in groups:
                     try:
                         instances, _ = get_asg_insts(gname)
-                        assert (empty_okay or len(instances) > 0,
-                            'No instances retrieved for Auto Scaling group named "{}"'.format(gname))
+                        assert empty_okay or len(instances) > 0, \
+                            'No instances retrieved for Auto Scaling group named "{}"'.format(gname)
                     except Exception as e:
                         raise Exception('Error getting a list of instances for Auto Scaling group named "{}"\n'
                                         '> {}: {}'.format(gname, e.__class__.__name__, str(e)))
@@ -431,6 +431,16 @@ class A(adjust.Adjust):
             # FIXME: base class should support custom exceptions and/or allow returning data from adjust()
             raise Exception("input data contains unknown components: "+ repr(list(data.keys())))
         # FIXME: correct behavior on 'extra' data (e.g. unknown comps or unknown settings) - ignore or fail?
+
+        # If the app is canary mode (ref_asg is non-empty) and single component
+        # (sanity check), then set the ASG min_size=0 so the canary can be placed
+        # in standby mode even if the min_size is presently 1
+        ref_gnames = list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') or '').split(','))))
+        if (ref_gnames and len(groups)==1 and len(lst)==1):
+            g,v = lst[0]
+            r = asg.update_auto_scaling_group(AutoScalingGroupName=g, MinSize=0)
+            print("DBG:  resp for ASG {} update min_size=0:  {}".format(g, r), file=sys.stderr)
+
         progr = Progress()
         grp_weight = 1.0/float(len(lst)) # empty settings counted as well (cosmetic, will cause uneven progress advance, FIXME)
         n = 0
