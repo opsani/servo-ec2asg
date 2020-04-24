@@ -607,17 +607,18 @@ class A(adjust.Adjust):
             return True
         return False
 
-    def get_mon_inst_ids(self):
+    def get_mon_insts(self):
         ret = {}
         gnames = self.get_cfg_target_asgs()
         ref_gnames = sorted(list(filter(str, map(lambda g: g.strip(), (cfg.get('ref_asg') if cfg.get('ref_asg') is not None else '').split(',')))))
+        inst_param = cfg.get('asg_inst_param', 'InstanceId')
         for name in gnames:
             insts, _ = get_asg_insts(name)
-            insts = map(lambda i: i['InstanceId'], insts)
+            insts = map(lambda i: i[inst_param], insts)
             ret.setdefault('instance_ids', []).extend(insts)
         for name in ref_gnames:
             insts, _ = get_asg_insts(name)
-            insts = map(lambda i: i['InstanceId'], insts)
+            insts = map(lambda i: i[inst_param], insts)
             ret.setdefault('ref_instance_ids', []).extend(insts)
         assert ret['ref_instance_ids'], 'Reference ASGs are empty. ' \
                                         'There should be at least one instance in the specified ASGs.'
@@ -732,7 +733,7 @@ class A(adjust.Adjust):
             m, _, _ = self.monitor()
         except Exception as e:
             raise Exception("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__, str(e)))
-        m = {**m, **self.get_mon_inst_ids()} if cfg.get('ref_asg') is not None else m
+        m = {**m, **self.get_mon_insts()} if cfg.get('ref_asg') is not None else m
         gc = lambda v: dict(settings=dict(inst_type=dict(value=v, type="enum", values=list(INST_TYPES), unit="ec2")))
         comps = {gname: gc(q(gname)) for gname in self.get_cfg_target_asgs()}
         return {"application": {"components": comps}, "monitoring": m}
@@ -740,13 +741,23 @@ class A(adjust.Adjust):
     def adjust(self, data=None):
         comps = self.input_data["application"].get("components", {}).copy()
         # print (self.input_data, file=sys.stderr)
-        lst = [(g, comps.pop(g)) for g in self.get_cfg_target_asgs() if comps.get(g)]
+        groups = self.get_cfg_target_asgs()
+        lst = [(g, comps.pop(g)) for g in groups if comps.get(g)]
         # check for components not in 'groups'
         if comps:
             # return  {"status":"failed", "message":}
             # FIXME: base class should support custom exceptions and/or allow returning data from adjust()
             raise Exception("input data contains unknown components: "+ repr(list(data.keys())))
         # FIXME: correct behavior on 'extra' data (e.g. unknown comps or unknown settings) - ignore or fail?
+
+        # If the app is canary mode (ref_asg is non-empty) and single component
+        # (sanity check), then set the ASG min_size=0 so the canary can be placed
+        # in standby mode even if the min_size is presently 1
+        if (cfg.get('ref_asg') and len(groups)==1 and len(lst)==1):
+            g,v = lst[0]
+            r = asg.update_auto_scaling_group(AutoScalingGroupName=g, MinSize=0)
+            print("DBG:  resp for ASG {} update min_size=0:  {}".format(g, r), file=sys.stderr)
+
         init_first_inst_types_per_group = {}
         progr = Progress()
         progr.start_timer()
