@@ -140,7 +140,7 @@ def get_group(name):
 
 
 def get_insts_from_resp(a):
-    return (yield from (i["Instances"] for i in a["Reservations"]))
+    return (yield from (i for r in a["Reservations"] for i in r["Instances"]))
 
 
 def get_asg_insts(gname):
