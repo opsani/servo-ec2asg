@@ -773,8 +773,8 @@ class A(adjust.Adjust):
                     try:
                         if self.scale_to_one_if_needed(g):
                             self.wait_for_scaling_activities([g], wait_time=60)
-                        init_first_inst_types_per_group[g] = next(get_insts_from_resp(
-                            ec2.describe_instances(InstanceIds=[get_group(g)["Instances"][0]["InstanceId"]])))[
+                        init_first_inst_types_per_group[g] = next(iter(get_insts_from_resp(
+                            ec2.describe_instances(InstanceIds=[get_group(g)["Instances"][0]["InstanceId"]]))))[
                             "InstanceType"]
                         set_running_inst_type(g, t["value"], p_stage, batch = cfg.get("batch_size", 1)) # TODO: check t["value"] exists
                     except AWS_EXCEPTIONS as e:
