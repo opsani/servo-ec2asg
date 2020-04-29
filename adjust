@@ -229,7 +229,7 @@ def wait_for_activities(aid, progr = None, timeout=ACTIVITY_TIMEOUT):
         wait_time += wait_inc
         # print("statuses:", repr( [a["StatusCode"] for a in asg.describe_scaling_activities(ActivityIds=aid)["Activities"]] ), file=sys.stderr) # DEBUG
         acts = asg.describe_scaling_activities(ActivityIds=aid)["Activities"]
-        if any(a["StatusCode"] not in ACT_FINAL_STATUSES for a in acts):
+        if all(a["StatusCode"] in ACT_FINAL_STATUSES for a in acts):
             return
         if progr:
             progr.set(float(wait_time) / timeout)
@@ -672,6 +672,10 @@ class A(adjust.Adjust):
         except Exception as e:
             raise AdjustError("Could not fetch all monitoring data due to: {}: {}".format(e.__class__.__name__,
                                                                                           str(e)))
+
+        # TODO: remove progress report below. Is only used for debug
+        progr.report('Canary Inst Id(s) {}'.format(target_app0.instance_ids))
+
         expired = False
         start = time()
         # Check-failure counters and checkboxes
