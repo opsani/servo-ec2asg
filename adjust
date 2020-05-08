@@ -695,8 +695,7 @@ class A(adjust.Adjust):
                                                                                               str(e)))
             if mon['spec_id'] != mon0['spec_id'] or mon['version_id'] != mon0['version_id']:
                 self.wait_for_scaling_activities(all_asgs, progr=progr)
-                raise AdjustError("target asg configuration was modified unexpectedly (before spec={}, before version={}, after spec={}, after version={}".format(mon0['spec_id'], mon0['version_id'], mon['spec_id'], mon['version_id']),
-                                  status="transient-failure", reason="app-update")
+                progr.report("WARNING: target asg configuration was modified unexpectedly: source asg={}\n target asg={}".format(mon0, mon))
             new_inst_ids.update(target_app.new_instances(target_app0))
             if new_inst_ids:
                 target_asg_restarted_once = True
