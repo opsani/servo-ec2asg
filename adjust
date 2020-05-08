@@ -208,7 +208,8 @@ def q(gname):
 
     if len(running_types) != 1:
         print("multiple instance types in asg {}: {}".format(gname, repr(running_types)),file=sys.stderr)
-        return "(multiple)"
+        return running_types[0]
+        #return "(multiple)"
     elif lt_type != running_types[0]:  # len == 1
         print("asg {}: instance type does {} not match running instances type {}".format(gname, lt_type, repr(running_types)),file=sys.stderr)
         return running_types[0] # return actual running type, not one from ASG
