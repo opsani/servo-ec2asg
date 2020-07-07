@@ -25,7 +25,7 @@ INST_STATE_TIMEOUT = 120
 SETTLE_TIME = 300
 SETTLE_CHECK_TIME = 30
 
-sess = boto3.session.Session() # todo: add config, e.g. region_name = ?, etc.
+sess = boto3.session.Session(region_name="us-west-2") # todo: add config, e.g. region_name = ?, etc.
 asg = sess.client("autoscaling")
 ec2 = sess.client("ec2")
 
