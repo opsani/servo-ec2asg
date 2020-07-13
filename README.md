@@ -22,6 +22,7 @@ The driver expects a configuration file named `config.yaml` in the current direc
     ec2asg:
        asg: "name-of-ASG,name-of-ASG2,..."
        batch_size: 1
+       region: us-east2 # Optional; if not specified, aws config and env var region will be used
 
 Only the top-level `ec2asg` key is required, any other keys present are ignored (the config file may be used by other Optune drivers, as well). The `asg` setting is mandatory and defines the ASG(s) to be operated on. It is a string containing a comma-separated list of ASG names. Each ASG will be represented as a 'component' in the application description provided when the driver is ran with `--query`.
 
